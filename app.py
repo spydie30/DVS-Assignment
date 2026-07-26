@@ -390,8 +390,41 @@ st.sidebar.title("Filters")
 
 year_min = int(df_all["Registration_Year"].min())
 year_max = int(df_all["Registration_Year"].max())
-year_range = st.sidebar.slider(
-    "Registration year", year_min, year_max, (year_min, year_max), step=1)
+date_min = df_all["Registration_Date"].min().date()
+date_max = df_all["Registration_Date"].max().date()
+
+# Two time filters offered side by side: the year slider (fast, coarse) and an
+# exact from/to calendar. A mode selector keeps them from silently fighting -
+# only the chosen one is applied - while both remain available.
+time_mode = st.sidebar.radio(
+    "Filter time by", ["Year range", "Exact dates"], horizontal=True)
+
+if time_mode == "Year range":
+    year_range = st.sidebar.slider(
+        "Registration year", year_min, year_max, (year_min, year_max), step=1)
+    start_date = pd.Timestamp(year_range[0], 1, 1)
+    end_date = pd.Timestamp(year_range[1], 12, 31)
+else:
+    picked = st.sidebar.date_input(
+        "Registration date (from – to)",
+        value=(date_min, date_max),
+        min_value=date_min, max_value=date_max,
+        format="YYYY-MM-DD",
+        help="Pick a start and end date. Both ends are inclusive.")
+    # date_input returns a single date until the second is chosen; hold the
+    # previous bound so the app never errors mid-selection.
+    if isinstance(picked, (list, tuple)):
+        d0 = picked[0] if len(picked) >= 1 else date_min
+        d1 = picked[1] if len(picked) == 2 else date_max
+    else:
+        d0 = d1 = picked
+    if d0 > d1:
+        d0, d1 = d1, d0
+    start_date = pd.Timestamp(d0)
+    end_date = pd.Timestamp(d1) + pd.Timedelta(hours=23, minutes=59)
+    year_range = (start_date.year, end_date.year)
+    st.sidebar.caption(
+        f"Showing {start_date.date()} to {end_date.date()} (inclusive).")
 
 # State -> RTO office (RTO options depend on the states chosen)
 all_states = sorted(df_all["State"].unique())
@@ -429,7 +462,7 @@ exclude_defects = st.sidebar.checkbox(
          "delivered dataset.")
 
 mask = (
-    df_all["Registration_Year"].between(*year_range)
+    df_all["Registration_Date"].between(start_date, end_date)
     & df_all["State"].isin(states)
     & df_all["Vehicle_Category"].isin(categories)
 )
