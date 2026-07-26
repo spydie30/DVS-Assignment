@@ -405,26 +405,45 @@ if time_mode == "Year range":
     start_date = pd.Timestamp(year_range[0], 1, 1)
     end_date = pd.Timestamp(year_range[1], 12, 31)
 else:
-    picked = st.sidebar.date_input(
-        "Registration date (from – to)",
-        value=(date_min, date_max),
-        min_value=date_min, max_value=date_max,
-        format="YYYY-MM-DD",
-        help="Pick a start and end date. Both ends are inclusive.")
-    # date_input returns a single date until the second is chosen; hold the
-    # previous bound so the app never errors mid-selection.
-    if isinstance(picked, (list, tuple)):
-        d0 = picked[0] if len(picked) >= 1 else date_min
-        d1 = picked[1] if len(picked) == 2 else date_max
-    else:
-        d0 = d1 = picked
-    if d0 > d1:
+    # Two independent single-date calendars rather than one range picker.
+    # A range picker re-runs the app the moment the FIRST date is clicked,
+    # leaving the range half-defined, and it forces both ends to be re-picked
+    # just to nudge one of them. Separate From/To fields keep each calendar
+    # self-contained: picking a date commits only that end, and the other side
+    # is untouched.
+    d_from, d_to = st.sidebar.columns(2)
+    with d_from:
+        d0 = st.date_input(
+            "From", value=date_min,
+            min_value=date_min, max_value=date_max,
+            format="YYYY-MM-DD", key="date_from",
+            help="Start of the window (inclusive).")
+    with d_to:
+        d1 = st.date_input(
+            "To", value=date_max,
+            min_value=date_min, max_value=date_max,
+            format="YYYY-MM-DD", key="date_to",
+            help="End of the window (inclusive).")
+
+    # Bounds are deliberately NOT cross-linked: constraining "To" by "From"
+    # would change that widget's identity and silently reset it. Instead an
+    # inverted pair is swapped and reported.
+    swapped = d0 > d1
+    if swapped:
         d0, d1 = d1, d0
+
     start_date = pd.Timestamp(d0)
     end_date = pd.Timestamp(d1) + pd.Timedelta(hours=23, minutes=59)
     year_range = (start_date.year, end_date.year)
+
+    if swapped:
+        st.sidebar.warning(
+            f"'From' was later than 'To', so the dates were swapped. "
+            f"Showing {d0} to {d1}.")
+    span_days = (d1 - d0).days + 1
     st.sidebar.caption(
-        f"Showing {start_date.date()} to {end_date.date()} (inclusive).")
+        f"Showing {d0} to {d1} (inclusive) · {span_days:,} day"
+        f"{'s' if span_days != 1 else ''}.")
 
 # State -> RTO office (RTO options depend on the states chosen)
 all_states = sorted(df_all["State"].unique())
