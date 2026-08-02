@@ -17,11 +17,25 @@ CFAR - Clean-Fuel Adoption Rate.
        shipped `is_clean` column encodes exactly this.
 
 FMI  - Fleet Modernization Index.
-       100 * (BS6-compliant vehicles / total), i.e. the shipped `is_compliant`
-       rate. NOTE: the refactor spec described FMI as a Herfindahl fuel-
-       diversity score, but the FMI column in this dataset is the BS6
-       compliance rate. Per project decision the dataset definition governs and
-       the diversity index is not implemented.
+       100 * (compliant vehicles / total), i.e. the shipped `is_compliant`
+       rate. Compliance is a COMPOUND test (source: DVSAssignmentMetric.ipynb):
+
+           is_compliant = Emission_Norm_Clean in ['BS6', 'ZEV']
+                          AND Vehicle_Age_Years <= 5
+
+       Both conditions must hold. A vehicle on a modern standard still fails if
+       it is more than five years old, and an older standard fails at any age.
+       NOTE: the refactor spec described FMI as a Herfindahl fuel-diversity
+       score, but the FMI column in this dataset is the compliance rate. Per
+       project decision the dataset definition governs and the diversity index
+       is not implemented.
+
+Emission_Norm_Clean
+       Shipped by the latest extract: the Bharat Stage norm, except electric
+       vehicles which carry 'ZEV' (zero-emission vehicle). This resolves the
+       earlier defect where electric vehicles were labelled with a tailpipe
+       standard, so the dashboard reads this column rather than patching
+       `Emission_Norm` itself.
 
 `is_clean` semantics
 --------------------
@@ -62,10 +76,13 @@ st.set_page_config(
 )
 
 _HERE = Path(__file__).parent
+# Newest extract first: it adds Emission_Norm_Clean and the compound
+# compliance rule. Older files still load via the fallbacks below.
 DATA_PATH = next(
-    (p for p in (_HERE / "cleaned_dvs_data_with_cfar_fmi.csv",
+    (p for p in (_HERE / "cleaned_dvs_data_latest.csv",
+                 _HERE / "cleaned_dvs_data_with_cfar_fmi.csv",
                  _HERE / "cleaned_dvs_data.csv") if p.exists()),
-    _HERE / "cleaned_dvs_data_with_cfar_fmi.csv",
+    _HERE / "cleaned_dvs_data_latest.csv",
 )
 
 # ---------------------------------------------------------------------------
@@ -91,8 +108,17 @@ FUEL_COLOR = {
     "Hybrid": ACCENT_ALT,
     "Electric": ACCENT,
 }
-NORM_ORDER = ["BS3", "BS4", "BS6"]
-NORM_COLOR = {"BS3": GREY_DARK, "BS4": GREY_MID, "BS6": ACCENT}
+# Oldest standard to newest, with ZEV (zero-emission) last as its own class.
+NORM_ORDER = ["BS3", "BS4", "BS6", "ZEV"]
+NORM_PLAIN = {
+    "BS3": "BS3 (oldest standard)",
+    "BS4": "BS4 (older standard)",
+    "BS6": "BS6 (current standard)",
+    "ZEV": "ZEV (zero-emission, electric)",
+}
+# Norms that satisfy the modernization test, and the maximum compliant age.
+COMPLIANT_NORMS = ["BS6", "ZEV"]
+MAX_COMPLIANT_AGE = 5
 CATEGORY_ORDER = ["2W", "3W", "4W", "LCV", "HCV", "OTH"]
 CATEGORY_PLAIN = {
     "2W": "Two-wheelers (scooters, motorcycles)",
@@ -289,16 +315,37 @@ def load_data(path: Path) -> pd.DataFrame:
     df["Category_Plain"] = df["Vehicle_Category"].map(CATEGORY_PLAIN)
     df["Is_Electric"] = df["Fuel_Type"].eq("Electric")
 
+    # Emission_Norm_Clean: shipped by the latest extract (ZEV for electric).
+    # Derived here only when an older file without the column is loaded.
+    if "Emission_Norm_Clean" not in df.columns:
+        df["Emission_Norm_Clean"] = df["Emission_Norm"].where(
+            ~df["Is_Electric"], "ZEV")
+
     # is_clean = CLEAN FUEL flag (not a data-quality flag).
     df["Is_Clean"] = (df["is_clean"].astype(bool) if "is_clean" in df.columns
                       else df["Fuel_Type"].isin(CLEAN_FUELS))
-    # is_compliant = meets the current BS6 standard. FMI is its rate.
-    df["Is_Compliant"] = (df["is_compliant"].astype(bool)
-                          if "is_compliant" in df.columns
-                          else df["Emission_Norm"].eq("BS6"))
 
-    df["Emission_Norm_Display"] = np.where(
-        df["Is_Electric"], "Not applicable (electric)", df["Emission_Norm"])
+    # Compliance is the compound rule: a modern norm AND within the age limit.
+    # Recomputed here so it stays correct if an older file is loaded.
+    df["Meets_Norm"] = df["Emission_Norm_Clean"].isin(COMPLIANT_NORMS)
+    df["Within_Age"] = df["Vehicle_Age_Years"] <= MAX_COMPLIANT_AGE
+    compliant_rule = df["Meets_Norm"] & df["Within_Age"]
+    df["Is_Compliant"] = (df["is_compliant"].astype(bool)
+                          if "is_compliant" in df.columns else compliant_rule)
+    df["Compliance_Rule"] = compliant_rule
+
+    # Why a vehicle fails, for the audit tab.
+    df["Fail_Reason"] = np.select(
+        [df["Is_Compliant"],
+         ~df["Meets_Norm"] & ~df["Within_Age"],
+         ~df["Meets_Norm"]],
+        ["Compliant", "Older standard and over age limit", "Older standard"],
+        default=f"Over {MAX_COMPLIANT_AGE}-year age limit")
+
+    # Readable standard name, used in tooltips and the risk table so "ZEV"
+    # is never presented without explanation.
+    df["Norm_Label"] = df["Emission_Norm_Clean"].map(
+        NORM_PLAIN).fillna(df["Emission_Norm_Clean"])
 
     df["RTO_Code"] = df["RTO_Office"].str.extract(r"\(([A-Z]{2})-")
     df["RTO_State"] = df["RTO_Code"].map(RTO_CODE_TO_STATE)
@@ -306,10 +353,16 @@ def load_data(path: Path) -> pd.DataFrame:
     # --- Genuine integrity defects (the dataset was pre-cleaned, so these are
     # the residual issues worth governing; `is_clean` is NOT one of them).
     df["QF_RTO_Mismatch"] = ~df["RTO_State"].eq(df["State"])
-    df["QF_EV_Has_Norm"] = df["Is_Electric"] & df["Emission_Norm"].isin(NORM_ORDER)
+    # The old "electric vehicle carries a Bharat Stage norm" defect is now
+    # corrected upstream by Emission_Norm_Clean, so the check becomes a
+    # regression test: every electric vehicle must be classed ZEV.
+    df["QF_EV_Not_ZEV"] = df["Is_Electric"] & df["Emission_Norm_Clean"].ne("ZEV")
     df["QF_EVBrand_Fossil"] = (df["Manufacturer_Brand"].isin(EV_ONLY_BRANDS)
                                & ~df["Is_Electric"])
-    QF = ["QF_RTO_Mismatch", "QF_EV_Has_Norm", "QF_EVBrand_Fossil"]
+    # Shipped compliance flag must match the documented compound rule.
+    df["QF_Compliance_Mismatch"] = df["Is_Compliant"].ne(df["Compliance_Rule"])
+    QF = ["QF_RTO_Mismatch", "QF_EV_Not_ZEV", "QF_EVBrand_Fossil",
+          "QF_Compliance_Mismatch"]
     df["Has_Defect"] = df[QF].any(axis=1)
     df["Defect_Count"] = df[QF].sum(axis=1)
 
@@ -317,10 +370,12 @@ def load_data(path: Path) -> pd.DataFrame:
         out = []
         if r["QF_RTO_Mismatch"]:
             out.append("RTO office belongs to a different state")
-        if r["QF_EV_Has_Norm"]:
-            out.append("Electric vehicle carries a Bharat Stage norm")
+        if r["QF_EV_Not_ZEV"]:
+            out.append("Electric vehicle not classed as zero-emission")
         if r["QF_EVBrand_Fossil"]:
             out.append("Electric-only brand recorded as fossil fuel")
+        if r["QF_Compliance_Mismatch"]:
+            out.append("Compliance flag disagrees with the documented rule")
         return "; ".join(out)
 
     df["Defect_Reasons"] = df.apply(_reasons, axis=1)
@@ -331,12 +386,17 @@ QUALITY_RULES = [
     ("QF_RTO_Mismatch", "Consistency",
      "RTO office code matches the declared State",
      "State-to-RTO drill-down is unreliable for these records."),
-    ("QF_EV_Has_Norm", "Validity",
-     "Electric vehicles carry no Bharat Stage norm",
-     "Bharat Stage rates tailpipe emissions; electric vehicles have none."),
+    ("QF_EV_Not_ZEV", "Validity",
+     "Electric vehicles are classed as zero-emission (ZEV)",
+     "Bharat Stage rates tailpipe emissions; electric vehicles have none. "
+     "Corrected upstream via Emission_Norm_Clean."),
     ("QF_EVBrand_Fossil", "Accuracy",
      "Electric-only manufacturers sell only electric vehicles",
      "Ola Electric and Ather produce electric vehicles exclusively."),
+    ("QF_Compliance_Mismatch", "Integrity",
+     "Compliance flag matches the documented compound rule",
+     f"is_compliant must equal (norm in {COMPLIANT_NORMS}) "
+     f"and (age <= {MAX_COMPLIANT_AGE})."),
 ]
 
 
@@ -353,8 +413,9 @@ def audit_quality(df: pd.DataFrame) -> pd.DataFrame:
     source_cols = [c for c in [
         "Registration_Number", "Registration_Date", "Registration_Year", "State",
         "RTO_Office", "Vehicle_Category", "Vehicle_Sub_Type", "Manufacturer_Brand",
-        "Fuel_Type", "Emission_Norm", "Engine_CC", "Seating_Capacity",
-        "Vehicle_Age_Years", "is_clean", "is_compliant", "CFAR", "FMI"]
+        "Fuel_Type", "Emission_Norm", "Emission_Norm_Clean", "Engine_CC",
+        "Seating_Capacity", "Vehicle_Age_Years", "is_clean", "is_compliant",
+        "CFAR", "FMI"]
         if c in df.columns]
     missing = int(df[source_cols].isna().sum().sum())
     rows.append({"Dimension": "Completeness",
@@ -501,7 +562,8 @@ st.sidebar.metric("Records in selection", fmt_int(len(df)),
                   f"of {fmt_int(len(df_all))} total")
 st.sidebar.caption(
     "CFAR = clean-fuel adoption rate. FMI = fleet modernization index "
-    "(share meeting the current BS6 standard)."
+    f"(share on a modern standard — BS6 or zero-emission — and no more than "
+    f"{MAX_COMPLIANT_AGE} years old)."
 )
 
 # ---------------------------------------------------------------------------
@@ -550,10 +612,11 @@ with tab_macro:
                 "Electric, CNG or hybrid")
     with k3:
         callout("Fleet Modernization Index (FMI)", fmt_score(fmi),
-                "Meets the current BS6 standard", accent=False)
+                f"BS6 or zero-emission, and ≤{MAX_COMPLIANT_AGE} years old",
+                accent=False)
     with k4:
         callout("Non-compliant fleet share", fmt_score(non_compliant),
-                "The exact complement of FMI", accent=False)
+                "Older standard, over the age limit, or both", accent=False)
 
     st.divider()
 
@@ -702,8 +765,8 @@ with tab_oem:
                     f"CFAR {top_cfar['CFAR']:.1f}%")
         with k3:
             # The spec called this "most diversified (highest FMI)", but FMI in
-            # this dataset is BS6 compliance, not a diversity score.
-            callout("Most BS6-compliant OEM", str(top_fmi["Brand"]),
+            # this dataset is the compliance rate, not a diversity score.
+            callout("Most compliant OEM", str(top_fmi["Brand"]),
                     f"FMI {top_fmi['FMI']:.1f}%", accent=False)
 
         st.divider()
@@ -721,7 +784,7 @@ with tab_oem:
                 "two-dimensional comparison. Widen the OEM or year filters.")
         else:
             x_mid, y_mid = oem["CFAR"].mean(), oem["FMI"].mean()
-            # Quadrant names describe the actual axes (clean fuel x BS6
+            # Quadrant names describe the actual axes (clean fuel x fleet
             # compliance), not the diversity framing in the original spec.
             oem["Quadrant"] = np.where(
                 oem["CFAR"] >= x_mid,
@@ -756,7 +819,7 @@ with tab_oem:
                 x=alt.X("CFAR:Q", title="CFAR (% clean fuel)",
                         scale=alt.Scale(zero=False, nice=True, padding=14),
                         axis=alt.Axis(labelAngle=0, grid=False)),
-                y=alt.Y("FMI:Q", title="FMI (% BS6 compliant)",
+                y=alt.Y("FMI:Q", title="FMI (% compliant)",
                         scale=alt.Scale(zero=False, nice=True, padding=14),
                         axis=alt.Axis(labelAngle=0, grid=False)),
             )
@@ -780,9 +843,10 @@ with tab_oem:
             st.altair_chart((rule_v + rule_h + pts + labels).properties(height=470),
                             width="stretch")
             st.caption(
-                "Green pioneers lead on both axes. Compliance leaders meet BS6 "
-                "but still sell fossil powertrains. Clean-fuel specialists sell "
-                "clean fuel yet carry older norms on the rest of their range. "
+                "Green pioneers lead on both axes. Compliance leaders run a "
+                "modern, young fleet but still sell fossil powertrains. "
+                "Clean-fuel specialists sell clean fuel yet carry older or "
+                "ageing stock across the rest of their range. "
                 + ("All manufacturers are labelled."
                    if label_all else
                    f"Only the {max_lab} largest manufacturers are labelled; "
@@ -891,32 +955,75 @@ with tab_audit:
     with sec_a:
         risk = df[~df["Is_Compliant"]].copy()
 
+        st.caption(
+            f"A vehicle is compliant only if it is on a modern standard "
+            f"(BS6 or ZEV) **and** is no more than {MAX_COMPLIANT_AGE} years "
+            "old. Failing either test puts it in the risk fleet below.")
+
         k1, k2, k3 = st.columns(3)
         with k1:
             callout("Non-compliant vehicles", fmt_int(len(risk)),
                     f"{(len(risk) / len(df) * 100):.1f}% of the selection")
         with k2:
-            callout("Fleet Modernization Index", fmt_score(df["Is_Compliant"].mean() * 100),
-                    "Share meeting BS6", accent=False)
+            callout("Fleet Modernization Index",
+                    fmt_score(df["Is_Compliant"].mean() * 100),
+                    f"Modern standard and ≤{MAX_COMPLIANT_AGE} years old",
+                    accent=False)
         with k3:
             oldest = int(risk["Vehicle_Age_Years"].max()) if len(risk) else 0
             callout("Oldest non-compliant vehicle", f"{oldest} yrs",
                     "Scrappage exposure grows with age", accent=False)
 
         if risk.empty:
-            st.success("Every vehicle in the current selection meets the BS6 standard.")
+            st.success("Every vehicle in the current selection is compliant.")
         else:
-            section("Ageing non-compliant fleet: age against emission norm",
+            # Why each vehicle fails matters now that there are two ways to.
+            section("Why vehicles fail the compliance test",
+                    "The two conditions fail independently, so a modern "
+                    "zero-emission vehicle can still age out.")
+            reasons = (risk.groupby("Fail_Reason").size()
+                           .reset_index(name="Vehicles")
+                           .sort_values("Vehicles", ascending=False))
+            reasons["Share"] = reasons["Vehicles"] / reasons["Vehicles"].sum()
+            rbase = chart(reasons).encode(
+                x=qx("Vehicles:Q", "Vehicles"),
+                y=alt.Y("Fail_Reason:N", sort="-x", title=None,
+                        axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320)),
+            )
+            rb = rbase.mark_bar(cornerRadiusEnd=3).encode(
+                color=alt.condition(
+                    alt.datum.Fail_Reason == f"Over {MAX_COMPLIANT_AGE}-year age limit",
+                    alt.value(ACCENT_ALT), alt.value(GREY_LIGHT)),
+                tooltip=[alt.Tooltip("Fail_Reason:N", title="Reason"),
+                         alt.Tooltip("Vehicles:Q", format=","),
+                         alt.Tooltip("Share:Q", format=".1%")],
+            )
+            rlbl = rbase.mark_text(align="left", dx=4, fontSize=11,
+                                   color=GREY_DARK).encode(
+                text=alt.Text("Vehicles:Q", format=","))
+            st.altair_chart((rb + rlbl).properties(height=180), width="stretch")
+            aged_out = int((risk["Fail_Reason"]
+                            == f"Over {MAX_COMPLIANT_AGE}-year age limit").sum())
+            if aged_out:
+                st.caption(
+                    f"{fmt_int(aged_out)} vehicles (shown in orange) are on a "
+                    "modern standard and fail on age alone — they would become "
+                    "compliant under a longer age allowance.")
+
+            section("Ageing non-compliant fleet: age against emission standard",
                     "Darker cells hold more vehicles. Older cohorts on the "
-                    "oldest norms carry the greatest scrappage exposure.")
-            grid = (risk.groupby(["Vehicle_Age_Years", "Emission_Norm"])
+                    "oldest standards carry the greatest scrappage exposure.")
+            grid = (risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean",
+                                  "Norm_Label"])
                         .size().reset_index(name="Vehicles"))
-            norms_here = [n for n in NORM_ORDER if n in set(grid["Emission_Norm"])]
+            norms_here = [n for n in NORM_ORDER
+                          if n in set(grid["Emission_Norm_Clean"])]
             # Positional-only base so the text layer does not inherit the blues
             # colour scale, which would tint the numbers and bury them in the
             # darker cells.
             hm_base = chart(grid).encode(
-                x=alt.X("Emission_Norm:N", sort=norms_here, title="Emission norm",
+                x=alt.X("Emission_Norm_Clean:N", sort=norms_here,
+                        title="Emission standard",
                         axis=alt.Axis(labelAngle=0, grid=False)),
                 y=alt.Y("Vehicle_Age_Years:O", title="Vehicle age (years)",
                         axis=alt.Axis(labelAngle=0, grid=False)),
@@ -925,7 +1032,7 @@ with tab_audit:
                 color=alt.Color("Vehicles:Q", title="Vehicles",
                                 scale=alt.Scale(scheme="blues")),
                 tooltip=[alt.Tooltip("Vehicle_Age_Years:O", title="Age (yrs)"),
-                         alt.Tooltip("Emission_Norm:N", title="Norm"),
+                         alt.Tooltip("Norm_Label:N", title="Standard"),
                          alt.Tooltip("Vehicles:Q", format=",")],
             )
             # Flip label colour on dark cells so the count stays readable.
@@ -969,8 +1076,8 @@ with tab_audit:
             risk_view = risk[risk["RTO_Office"].isin(rto_pick)] if rto_pick else risk
             risk_cols = ["Registration_Number", "Registration_Date", "State",
                          "RTO_Office", "Vehicle_Category", "Vehicle_Sub_Type",
-                         "Manufacturer_Brand", "Fuel_Type", "Emission_Norm",
-                         "Vehicle_Age_Years", "Engine_CC"]
+                         "Manufacturer_Brand", "Fuel_Type", "Norm_Label",
+                         "Vehicle_Age_Years", "Fail_Reason", "Engine_CC"]
             st.dataframe(risk_view[risk_cols].sort_values("Vehicle_Age_Years",
                                                           ascending=False),
                          width="stretch", height=340, hide_index=True)
@@ -1065,8 +1172,9 @@ with tab_audit:
                 "Every record failing at least one integrity check, with the "
                 "reason attached, for audit export.")
         reason_opts = ["RTO office belongs to a different state",
-                       "Electric vehicle carries a Bharat Stage norm",
-                       "Electric-only brand recorded as fossil fuel"]
+                       "Electric vehicle not classed as zero-emission",
+                       "Electric-only brand recorded as fossil fuel",
+                       "Compliance flag disagrees with the documented rule"]
         picked = st.multiselect("Filter by defect", reason_opts, default=[])
         view = defects
         if picked:
@@ -1080,7 +1188,8 @@ with tab_audit:
             drill_cols = ["Registration_Number", "State", "RTO_Office",
                           "Vehicle_Category", "Vehicle_Sub_Type",
                           "Manufacturer_Brand", "Fuel_Type", "Emission_Norm",
-                          "Engine_CC", "Seating_Capacity", "Defect_Reasons"]
+                          "Emission_Norm_Clean", "Engine_CC",
+                          "Seating_Capacity", "Defect_Reasons"]
             st.dataframe(view[drill_cols], width="stretch", height=380,
                          hide_index=True)
             st.download_button(
