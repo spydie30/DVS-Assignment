@@ -108,6 +108,33 @@ FUEL_COLOR = {
     "Hybrid": ACCENT_ALT,
     "Electric": ACCENT,
 }
+# Neutral fallbacks for values the palette has never seen.
+UNKNOWN_COLORS = [GREY_LIGHT, GREY_MID, GREY_DARK, "#B0BEC5", "#7E8A93"]
+
+
+def ordered(values, preferred):
+    """Preferred vocabulary first, then anything else the data contains.
+
+    The hardcoded orders exist for consistent axes and colour. Filtering the
+    data THROUGH them would silently drop any new value a future extract
+    introduces, so unknown values are appended rather than discarded.
+    """
+    present = {v for v in values if pd.notna(v)}
+    known = [v for v in preferred if v in present]
+    extra = sorted(present.difference(preferred), key=str)
+    return known + extra
+
+
+def colors_for(values, palette):
+    """Colour per value, assigning neutral greys to anything unmapped."""
+    out, i = [], 0
+    for v in values:
+        if v in palette:
+            out.append(palette[v])
+        else:
+            out.append(UNKNOWN_COLORS[i % len(UNKNOWN_COLORS)])
+            i += 1
+    return out
 # Oldest standard to newest, with ZEV (zero-emission) last as its own class.
 NORM_ORDER = ["BS3", "BS4", "BS6", "ZEV"]
 NORM_PLAIN = {
@@ -312,7 +339,9 @@ def load_data(path: Path) -> pd.DataFrame:
     # "EV" is an acronym; spell it out once, globally.
     df["Fuel_Type"] = df["Fuel_Type"].replace({"EV": "Electric"})
 
-    df["Category_Plain"] = df["Vehicle_Category"].map(CATEGORY_PLAIN)
+    # Unmapped categories keep their raw code rather than becoming blank.
+    df["Category_Plain"] = (df["Vehicle_Category"].map(CATEGORY_PLAIN)
+                            .fillna(df["Vehicle_Category"]))
     df["Is_Electric"] = df["Fuel_Type"].eq("Electric")
 
     # Emission_Norm_Clean: shipped by the latest extract (ZEV for electric).
@@ -516,7 +545,7 @@ rtos = st.sidebar.multiselect(
     help="Leave empty to include every RTO office in the selected states.")
 
 # Category -> sub-type (sub-type options depend on the categories chosen)
-cats_present = [c for c in CATEGORY_ORDER if c in set(df_all["Vehicle_Category"])]
+cats_present = ordered(df_all["Vehicle_Category"], CATEGORY_ORDER)
 categories = st.sidebar.multiselect("Vehicle category", cats_present,
                                     default=cats_present)
 _cat_pool = (df_all[df_all["Vehicle_Category"].isin(categories)]
@@ -629,7 +658,7 @@ with tab_macro:
     section(macro_title,
             "Fuel mix as a share of registrations each year. Connection: bands "
             "are continuous, so each fuel reads as one trajectory.")
-    fuels_here = [f for f in FUEL_ORDER if f in set(fuel_year["Fuel_Type"])]
+    fuels_here = ordered(fuel_year["Fuel_Type"], FUEL_ORDER)
     area = (
         chart(fuel_year)
         .mark_area()
@@ -642,7 +671,7 @@ with tab_macro:
                     axis=alt.Axis(labelAngle=0, grid=False, format="%")),
             color=alt.Color("Fuel_Type:N", title="Fuel",
                             scale=alt.Scale(domain=fuels_here,
-                                            range=[FUEL_COLOR[f] for f in fuels_here]),
+                                            range=colors_for(fuels_here, FUEL_COLOR)),
                             sort=fuels_here),
             order=alt.Order("color_Fuel_Type_sort_index:Q"),
             tooltip=[alt.Tooltip("Registration_Year:O", title="Year"),
@@ -703,7 +732,7 @@ with tab_macro:
             y0, y1 = int(yrs[0]), int(yrs[-1])
             s0 = df[df["Registration_Year"] == y0]["Fuel_Type"].value_counts(normalize=True)
             s1 = df[df["Registration_Year"] == y1]["Fuel_Type"].value_counts(normalize=True)
-            allf = [f for f in FUEL_ORDER if f in set(s0.index) | set(s1.index)]
+            allf = ordered(set(s0.index) | set(s1.index), FUEL_ORDER)
             shift = pd.DataFrame({
                 "Fuel": allf,
                 "Shift_bps": [(s1.get(f, 0) - s0.get(f, 0)) * 10000 for f in allf],
@@ -869,7 +898,7 @@ with tab_oem:
         mix = (df[df["Manufacturer_Brand"].isin(keep)]
                .groupby(["Manufacturer_Brand", "Fuel_Type"])
                .size().reset_index(name="Registrations"))
-        fuels_mix = [f for f in FUEL_ORDER if f in set(mix["Fuel_Type"])]
+        fuels_mix = ordered(mix["Fuel_Type"], FUEL_ORDER)
 
         section("Fuel mix within each manufacturer",
                 "Shares within each bar; bars are ordered by total volume.")
@@ -884,7 +913,7 @@ with tab_oem:
                         axis=alt.Axis(labelAngle=0, grid=False, labelLimit=220)),
                 color=alt.Color("Fuel_Type:N", title="Fuel",
                                 scale=alt.Scale(domain=fuels_mix,
-                                                range=[FUEL_COLOR[f] for f in fuels_mix]),
+                                                range=colors_for(fuels_mix, FUEL_COLOR)),
                                 sort=fuels_mix),
                 order=alt.Order("color_Fuel_Type_sort_index:Q"),
                 tooltip=[alt.Tooltip("Manufacturer_Brand:N", title="OEM"),
@@ -926,7 +955,7 @@ with tab_oem:
                     ).properties(height=max(320, cc["Vehicle_Sub_Type"].nunique() * 26))
                 )
             else:
-                fuels_cc = [f for f in FUEL_ORDER if f in set(cc["Fuel_Type"])]
+                fuels_cc = ordered(cc["Fuel_Type"], FUEL_ORDER)
                 box = (
                     chart(cc)
                     .mark_boxplot(extent=1.5, size=30,
@@ -938,7 +967,7 @@ with tab_oem:
                         y=qy("Engine_CC:Q", "Engine displacement (cc)"),
                         color=alt.Color("Fuel_Type:N", legend=None,
                                         scale=alt.Scale(domain=fuels_cc,
-                                                        range=[FUEL_COLOR[f] for f in fuels_cc])),
+                                                        range=colors_for(fuels_cc, FUEL_COLOR))),
                     ).properties(height=340)
                 )
             st.altair_chart(box, width="stretch")
@@ -1016,8 +1045,7 @@ with tab_audit:
             grid = (risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean",
                                   "Norm_Label"])
                         .size().reset_index(name="Vehicles"))
-            norms_here = [n for n in NORM_ORDER
-                          if n in set(grid["Emission_Norm_Clean"])]
+            norms_here = ordered(grid["Emission_Norm_Clean"], NORM_ORDER)
             # Positional-only base so the text layer does not inherit the blues
             # colour scale, which would tint the numbers and bury them in the
             # darker cells.
