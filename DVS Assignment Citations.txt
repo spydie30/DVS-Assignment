@@ -22,7 +22,8 @@ Here is how the design decisions in assignment map directly to the concepts and 
 *   **Standard Chart Types (Section 8):** Relying strictly on standard charts like lines and bars is recommended because they are common, which means there is a lower learning curve and less cognitive load for the audience.
 
 Refrences -
-
+NITI Aayog Report:-https://www.niti.gov.in/node/891
+(for CFAR & FMI)
 Storytelling with Data 
 Chapter 1: the importance of context
 
