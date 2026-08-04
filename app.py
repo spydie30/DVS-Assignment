@@ -683,6 +683,52 @@ with tab_macro:
 
     st.divider()
 
+    cvc, cen = st.columns([1, 1])
+
+    # --- Chart 1b: registrations by vehicle category ------------------------
+    with cvc:
+        cat_counts = (df.groupby(["Vehicle_Category", "Category_Plain"])
+                        .size().reset_index(name="Registrations")
+                        .sort_values("Registrations", ascending=False))
+
+        section("Registrations by vehicle category",
+                "Similarity: bars share one hue, so the eye compares length, "
+                "not colour.")
+        cat_base = chart(cat_counts).encode(
+            x=qx("Registrations:Q", "Registrations", fmt=","),
+            y=alt.Y("Category_Plain:N", sort="-x", title=None,
+                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+        )
+        cat_bars = cat_base.mark_bar(cornerRadiusEnd=3, color=ACCENT)
+        cat_lbl = cat_base.mark_text(align="left", dx=4, fontSize=11,
+                                     color=GREY_DARK).encode(
+            text=alt.Text("Registrations:Q", format=","))
+        st.altair_chart((cat_bars + cat_lbl).properties(height=260),
+                        width="stretch")
+
+    # --- Chart 1c: registrations by emission norm ---------------------------
+    with cen:
+        norm_counts = (df.groupby(["Emission_Norm_Clean", "Norm_Label"])
+                         .size().reset_index(name="Registrations")
+                         .sort_values("Registrations", ascending=False))
+
+        section("Registrations by emission norm",
+                "Similarity: bars share one hue, so the eye compares length, "
+                "not colour.")
+        norm_base = chart(norm_counts).encode(
+            x=qx("Registrations:Q", "Registrations", fmt=","),
+            y=alt.Y("Norm_Label:N", sort="-x", title=None,
+                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+        )
+        norm_bars = norm_base.mark_bar(cornerRadiusEnd=3, color=ACCENT_ALT)
+        norm_lbl = norm_base.mark_text(align="left", dx=4, fontSize=11,
+                                       color=GREY_DARK).encode(
+            text=alt.Text("Registrations:Q", format=","))
+        st.altair_chart((norm_bars + norm_lbl).properties(height=260),
+                        width="stretch")
+
+    st.divider()
+
     c1, c2 = st.columns([1, 1])
 
     # --- Chart 2: CFAR ranking by state (or RTO office) --------------------
