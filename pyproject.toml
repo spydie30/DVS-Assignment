@@ -1,0 +1,9 @@
+[project]
+name = "dsv-assignment"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "altair>=5.0",
+    "pandas>=2.0",
+    "streamlit>=1.40",
+]
