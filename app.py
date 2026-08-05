@@ -78,12 +78,16 @@ st.set_page_config(
 _HERE = Path(__file__).parent
 # Newest extract first: it adds Emission_Norm_Clean and the compound
 # compliance rule. Older files still load via the fallbacks below.
-DATA_PATH = next(
-    (p for p in (_HERE / "cleaned_dvs_data_latest.csv",
-                 _HERE / "cleaned_dvs_data_with_cfar_fmi.csv",
-                 _HERE / "cleaned_dvs_data.csv") if p.exists()),
-    _HERE / "cleaned_dvs_data_latest.csv",
-)
+# DATA_PATH = next(
+#     (p for p in (_HERE / "cleaned_dvs_data_latest.csv",
+#                  _HERE / "cleaned_dvs_data_with_cfar_fmi.csv",
+#                  _HERE / "cleaned_dvs_data.csv") if p.exists()),
+#     _HERE / "cleaned_dvs_data_latest.csv",
+# )
+
+# Uncomment any of these 2 lines to use that particular dataset.
+# DATA_PATH = "VAHAN_Dataset_Completely_Cleaned.csv"
+DATA_PATH = "VAHAN_Dataset_Fully_Corrected_Issues.csv"
 
 # ---------------------------------------------------------------------------
 # DESIGN SYSTEM
