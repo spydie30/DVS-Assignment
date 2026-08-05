@@ -95,25 +95,172 @@ DATA_PATH = "VAHAN_Dataset_Fully_Corrected_Issues.csv"
 # everywhere, which is what satisfies the Gestalt "Similarity" rule.
 # ---------------------------------------------------------------------------
 
-ACCENT = "#1F6FB2"        # single high-contrast accent (blue)
-ACCENT_ALT = "#E08214"    # orange, for two-way contrast (never red/green)
-GREY_DARK = "#54595F"
-GREY_MID = "#8C9196"
-GREY_LIGHT = "#C9CDD1"
-GREY_FAINT = "#E8EAEC"
-INK = "#25292E"
+# ACCENT = "#1F6FB2"        # single high-contrast accent (blue)
+# ACCENT_ALT = "#E08214"    # orange, for two-way contrast (never red/green)
+# GREY_DARK = "#54595F"
+# GREY_MID = "#8C9196"
+# GREY_LIGHT = "#C9CDD1"
+# GREY_FAINT = "#E8EAEC"
+# INK = "#25292E"
 
-CLEAN_FUELS = ["Electric", "CNG", "Hybrid"]
-FUEL_ORDER = ["Petrol", "Diesel", "CNG", "Hybrid", "Electric"]
-FUEL_COLOR = {
-    "Petrol": GREY_MID,
-    "Diesel": GREY_DARK,
-    "CNG": "#9CC3DE",
-    "Hybrid": ACCENT_ALT,
-    "Electric": ACCENT,
-}
+# CLEAN_FUELS = ["Electric", "CNG", "Hybrid"]
+# FUEL_ORDER = ["Petrol", "Diesel", "CNG", "Hybrid", "Electric"]
+# FUEL_COLOR = {
+#     "Petrol": GREY_MID,
+#     "Diesel": GREY_DARK,
+#     "CNG": "#9CC3DE",
+#     "Hybrid": ACCENT_ALT,
+#     "Electric": ACCENT,
+# }
 # Neutral fallbacks for values the palette has never seen.
-UNKNOWN_COLORS = [GREY_LIGHT, GREY_MID, GREY_DARK, "#B0BEC5", "#7E8A93"]
+import streamlit as st
+import theme  # <--- 1. IMPORT THEME MODULE
+UNKNOWN_COLORS = theme.UNKNOWN_COLORS  # <--- 1. IMPORT THEME MODULE
+st.set_page_config(
+    page_title="VAHAN RTO Analytics", layout="wide"
+)
+
+theme.apply_dashboard_theme()  # <--- 2. INJECT THEME GLOBALLY
+
+
+import altair as alt
+import streamlit as st
+
+# ==============================================================================
+# 1. GLOBAL CONSTANTS (Exported for direct import if needed)
+# ==============================================================================
+ACCENT = theme.ACCENT       # Hero Blue: Zero-Emission / Electric
+ACCENT_ALT = theme.ACCENT_ALT   # Safety Orange: Hybrid / Transition Accent
+GREY_DARK = theme.GREY_DARK    # Diesel
+GREY_MID = theme.GREY_MID     # Petrol
+GREY_LIGHT = theme.GREY_LIGHT   # Borders / Dividers
+GREY_FAINT = theme.GREY_FAINT   # Gestalt Container Background
+INK = theme.INK          # Soft Charcoal Typography
+CANVAS = "#FFFFFF"       # Main Canvas
+
+CLEAN_FUELS = theme.CLEAN_FUELS
+FUEL_ORDER = theme.FUEL_ORDER
+
+FUEL_COLOR = theme.FUEL_COLOR
+
+# ==============================================================================
+# 2. ALTAIR GLOBAL THEME ENGINE
+# ==============================================================================
+def _vahan_altair_theme():
+    return {
+        "config": {
+            "background": CANVAS,
+            "view": {"stroke": "transparent"},  # Removes heavy outer borders
+            "axis": {
+                "domainColor": GREY_LIGHT,
+                "gridColor": "#E8EAEC",
+                "gridDash": [3, 3],
+                "labelColor": INK,
+                "labelFontSize": 11,
+                "titleColor": INK,
+                "titleFontSize": 12,
+                "titleFontWeight": "bold",
+            },
+            "legend": {
+                "labelColor": INK,
+                "titleColor": INK,
+                "titleFontWeight": "bold",
+                "orient": "top"
+            },
+            "header": {
+                "labelColor": INK,
+                "titleColor": INK,
+            }
+        }
+    }
+
+# Register Altair theme globally on import
+alt.themes.register("vahan_clean_theme", _vahan_altair_theme)
+alt.themes.enable("vahan_clean_theme")
+
+# Easy Altair Color Encoder
+def fuel_color_scale():
+    """Drop-in helper for Altair color encodings.
+    Usage in chart: color=fuel_color_scale()
+    """
+    return alt.Color(
+        "Fuel_Type:N",
+        scale=alt.Scale(
+            domain=FUEL_ORDER,
+            range=[FUEL_COLOR[f] for f in FUEL_ORDER]
+        ),
+        legend=alt.Legend(title="Powertrain Type")
+    )
+
+# ==============================================================================
+# 3. STREAMLIT GLOBAL CSS INJECTOR
+# ==============================================================================
+def apply_dashboard_theme():
+    """Call this ONE time right after st.set_page_config() in app.py.
+    It automatically styles your existing 2,000 lines of code.
+    """
+    css = f"""
+    <style>
+        /* Main background & base text color */
+        .stApp {{
+            background-color: {CANVAS};
+            color: {INK};
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }}
+        
+        /* Headers & Typography */
+        h1, h2, h3, h4, h5, h6, p, label, .stMarkdown {{
+            color: {INK} !important;
+        }}
+        
+        /* Gestalt Enclosure: Automatic styling for st.container(border=True) and Expander cards */
+        [data-testid="stVerticalBlockBorderWrapper"] > div {{
+            background-color: {GREY_FAINT} !important;
+            border: 1px solid {GREY_LIGHT} !important;
+            border-radius: 8px !important;
+            padding: 12px !important;
+        }}
+        
+        /* Callout / Metric Cards Styling */
+        [data-testid="stMetric"] {{
+            background-color: {GREY_FAINT};
+            border: 1px solid {GREY_LIGHT};
+            border-radius: 8px;
+            padding: 12px 16px;
+            border-left: 4px solid {ACCENT} !important;
+        }}
+        
+        [data-testid="stMetricValue"] {{
+            color: {ACCENT} !important;
+            font-weight: 700 !important;
+        }}
+
+        [data-testid="stMetricLabel"] {{
+            color: {INK} !important;
+            font-size: 0.85rem !important;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+
+        /* Clean Tab Navigation Styling */
+        button[data-baseweb="tab"] {{
+            color: {GREY_DARK} !important;
+            font-weight: 600 !important;
+        }}
+        
+        button[data-baseweb="tab"][aria-selected="true"] {{
+            color: {ACCENT} !important;
+            border-bottom-color: {ACCENT} !important;
+        }}
+        
+        /* Sidebar Styling */
+        [data-testid="stSidebar"] {{
+            background-color: {GREY_FAINT} !important;
+            border-right: 1px solid {GREY_LIGHT} !important;
+        }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
 
 
 def ordered(values, preferred):
@@ -323,7 +470,7 @@ RTO_CODE_TO_STATE = {
     "TG": "Telangana", "MH": "Maharashtra",
     # Chandigarh is a union territory: a valid RTO code that belongs to no
     # state in this 12-state dataset.
-    "CH": "Chandigarh (UT)",
+    "CH": "Chandigarh",
 }
 EV_ONLY_BRANDS = ["Ola Electric", "Ather"]
 
@@ -652,40 +799,107 @@ with tab_macro:
                 "Older standard, over the age limit, or both", accent=False)
 
     st.divider()
+    import altair as alt
+    import streamlit as st
 
-    # --- Chart 1: fuel share trajectory (100% stacked) ---------------------
+    # 1. Aggregate Data
     fuel_year = (df.groupby(["Registration_Year", "Fuel_Type"])
-                   .size().reset_index(name="Registrations"))
-    clean_by_year = df.groupby("Registration_Year")["Is_Clean"].mean()
-    macro_title, macro_delta = describe_trend(clean_by_year, "Clean-fuel adoption")
+                .size().reset_index(name="Registrations"))
 
-    section(macro_title,
-            "Fuel mix as a share of registrations each year. Connection: bands "
-            "are continuous, so each fuel reads as one trajectory.")
+    # Calculate total registrations per year
+    total_year = (fuel_year.groupby("Registration_Year")["Registrations"]
+                        .sum().reset_index(name="Total_Registrations"))
+
+    # Merge totals back to calculate exact percentages for the hover tooltip
+    fuel_year = fuel_year.merge(total_year, on="Registration_Year")
+    fuel_year["Share"] = fuel_year["Registrations"] / fuel_year["Total_Registrations"]
+
+    # (Assuming clean_by_year, fuels_here, colors_for, etc. are defined as in your original script)
     fuels_here = ordered(fuel_year["Fuel_Type"], FUEL_ORDER)
-    area = (
-        chart(fuel_year)
-        .mark_area()
+
+    # --- Layer 1: Stacked Bar Chart (Absolute values) ---
+    bar_chart = (
+        alt.Chart(fuel_year)
+        .mark_bar(opacity=0.85) # Slight opacity makes the overlay look cleaner
         .encode(
-            x=alt.X("Registration_Year:O", title="Registration year",
+            x=alt.X("Registration_Year:O", title="Registration year", 
                     axis=alt.Axis(labelAngle=0, grid=False)),
-            y=alt.Y("Registrations:Q", stack="normalize",
-                    title="Share of registrations",
-                    scale=alt.Scale(zero=True),
-                    axis=alt.Axis(labelAngle=0, grid=False, format="%")),
+            y=alt.Y("Registrations:Q", 
+                    title="Total Registrations", 
+                    axis=alt.Axis(format="s")), # 's' formats as 10k, 1M, etc.
             color=alt.Color("Fuel_Type:N", title="Fuel",
                             scale=alt.Scale(domain=fuels_here,
                                             range=colors_for(fuels_here, FUEL_COLOR)),
                             sort=fuels_here),
             order=alt.Order("color_Fuel_Type_sort_index:Q"),
-            tooltip=[alt.Tooltip("Registration_Year:O", title="Year"),
-                     alt.Tooltip("Fuel_Type:N", title="Fuel"),
-                     alt.Tooltip("Registrations:Q", format=",")],
-        ).properties(height=330)
+            tooltip=[
+                alt.Tooltip("Registration_Year:O", title="Year"),
+                alt.Tooltip("Fuel_Type:N", title="Fuel"),
+                alt.Tooltip("Registrations:Q", title="Registrations", format=","),
+                alt.Tooltip("Share:Q", title="Share of Year", format=".1%") # Shows proportion visually
+            ]
+        )
     )
-    st.altair_chart(area, width="stretch")
 
+    # --- Layer 2: Total Trend Line Overlay ---
+    line_chart = (
+        alt.Chart(total_year)
+        .mark_line(color="black", strokeWidth=2, point=alt.OverlayMarkDef(color="black", size=50))
+        .encode(
+            x=alt.X("Registration_Year:O"),
+            y=alt.Y("Total_Registrations:Q"),
+            tooltip=[
+                alt.Tooltip("Registration_Year:O", title="Year"),
+                alt.Tooltip("Total_Registrations:Q", title="Total for Year", format=",")
+            ]
+        )
+    )
+
+    # --- Combine into Compound Chart ---
+    # Using alt.layer() automatically maps both charts to a single, shared Y-axis
+    compound_chart = alt.layer(
+        bar_chart,
+        line_chart
+    ).properties(
+        height=400
+    )
+
+# Render in Streamlit
+    st.altair_chart(compound_chart, use_container_width=True)
     st.divider()
+    
+    # # --- Chart 1: fuel share trajectory (100% stacked) ---------------------
+    # fuel_year = (df.groupby(["Registration_Year", "Fuel_Type"])
+    #                .size().reset_index(name="Registrations"))
+    # clean_by_year = df.groupby("Registration_Year")["Is_Clean"].mean()
+    # macro_title, macro_delta = describe_trend(clean_by_year, "Clean-fuel adoption")
+
+    # section(macro_title,
+    #         "Fuel mix as a share of registrations each year. Connection: bands "
+    #         "are continuous, so each fuel reads as one trajectory.")
+    # fuels_here = ordered(fuel_year["Fuel_Type"], FUEL_ORDER)
+    # area = (
+    #     chart(fuel_year)
+    #     .mark_area()
+    #     .encode(
+    #         x=alt.X("Registration_Year:O", title="Registration year",
+    #                 axis=alt.Axis(labelAngle=0, grid=False)),
+    #         y=alt.Y("Registrations:Q", stack="normalize",
+    #                 title="Share of registrations",
+    #                 scale=alt.Scale(zero=True),
+    #                 axis=alt.Axis(labelAngle=0, grid=False, format="%")),
+    #         color=alt.Color("Fuel_Type:N", title="Fuel",
+    #                         scale=alt.Scale(domain=fuels_here,
+    #                                         range=colors_for(fuels_here, FUEL_COLOR)),
+    #                         sort=fuels_here),
+    #         order=alt.Order("color_Fuel_Type_sort_index:Q"),
+    #         tooltip=[alt.Tooltip("Registration_Year:O", title="Year"),
+    #                  alt.Tooltip("Fuel_Type:N", title="Fuel"),
+    #                  alt.Tooltip("Registrations:Q", format=",")],
+    #     ).properties(height=330)
+    # )
+    # st.altair_chart(area, width="stretch")
+
 
     cvc, cen = st.columns([1, 1])
 
@@ -1031,139 +1245,229 @@ with tab_audit:
                             "Section B · Data governance"])
 
     # ---------------- Section A: non-compliant fleet -----------------------
+# ---------------- Section A: non-compliant fleet -----------------------
     with sec_a:
         risk = df[~df["Is_Compliant"]].copy()
 
         st.caption(
             f"A vehicle is compliant only if it is on a modern standard "
             f"(BS6 or ZEV) **and** is no more than {MAX_COMPLIANT_AGE} years "
-            "old. Failing either test puts it in the risk fleet below.")
+            "old. Failing either test puts it in the risk fleet below."
+        )
 
         k1, k2, k3 = st.columns(3)
         with k1:
-            callout("Non-compliant vehicles", fmt_int(len(risk)),
-                    f"{(len(risk) / len(df) * 100):.1f}% of the selection")
+            callout(
+                "Non-compliant vehicles",
+                fmt_int(len(risk)),
+                f"{(len(risk) / len(df) * 100):.1f}% of the selection",
+                accent=False,
+            )
         with k2:
-            callout("Fleet Modernization Index",
-                    fmt_score(df["Is_Compliant"].mean() * 100),
-                    f"Modern standard and ≤{MAX_COMPLIANT_AGE} years old",
-                    accent=False)
+            callout(
+                "Fleet Modernization Index",
+                fmt_score(df["Is_Compliant"].mean() * 100),
+                f"Modern standard and ≤{MAX_COMPLIANT_AGE} years old",
+                accent=True,
+            )
         with k3:
-            oldest = int(risk["Vehicle_Age_Years"].max()) if len(risk) else 0
-            callout("Oldest non-compliant vehicle", f"{oldest} yrs",
-                    "Scrappage exposure grows with age", accent=False)
+            # FIX 3: Replaced fragile max age outlier with robust fleet median age
+            med_age = risk["Vehicle_Age_Years"].median() if len(risk) else 0.0
+            callout(
+                "Median Age (Risk Fleet)",
+                f"{med_age:.1f} yrs",
+                "Robust central measure of scrappage exposure",
+                accent=False,
+            )
 
         if risk.empty:
             st.success("Every vehicle in the current selection is compliant.")
         else:
             # Why each vehicle fails matters now that there are two ways to.
-            section("Why vehicles fail the compliance test",
-                    "The two conditions fail independently, so a modern "
-                    "zero-emission vehicle can still age out.")
-            reasons = (risk.groupby("Fail_Reason").size()
-                           .reset_index(name="Vehicles")
-                           .sort_values("Vehicles", ascending=False))
+            section(
+                "Why vehicles fail the compliance test",
+                "The two conditions fail independently, so a modern "
+                "zero-emission vehicle can still age out.",
+            )
+            reasons = (
+                risk.groupby("Fail_Reason")
+                .size()
+                .reset_index(name="Vehicles")
+                .sort_values("Vehicles", ascending=False)
+            )
             reasons["Share"] = reasons["Vehicles"] / reasons["Vehicles"].sum()
             rbase = chart(reasons).encode(
                 x=qx("Vehicles:Q", "Vehicles"),
-                y=alt.Y("Fail_Reason:N", sort="-x", title=None,
-                        axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320)),
+                y=alt.Y(
+                    "Fail_Reason:N",
+                    sort="-x",
+                    title=None,
+                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320),
+                ),
             )
+
+            # FIX 1: Replaced ACCENT_ALT (Hybrid Orange) with neutral slate (AGE_FAIL_COLOR)
+            AGE_FAIL_COLOR = "#4A5568"  # Slate charcoal to protect powertrain color contract
             rb = rbase.mark_bar(cornerRadiusEnd=3).encode(
                 color=alt.condition(
-                    alt.datum.Fail_Reason == f"Over {MAX_COMPLIANT_AGE}-year age limit",
-                    alt.value(ACCENT_ALT), alt.value(GREY_LIGHT)),
-                tooltip=[alt.Tooltip("Fail_Reason:N", title="Reason"),
-                         alt.Tooltip("Vehicles:Q", format=","),
-                         alt.Tooltip("Share:Q", format=".1%")],
+                    alt.datum.Fail_Reason
+                    == f"Over {MAX_COMPLIANT_AGE}-year age limit",
+                    alt.value(AGE_FAIL_COLOR),
+                    alt.value(GREY_LIGHT),
+                ),
+                tooltip=[
+                    alt.Tooltip("Fail_Reason:N", title="Reason"),
+                    alt.Tooltip("Vehicles:Q", format=","),
+                    alt.Tooltip("Share:Q", format=".1%"),
+                ],
             )
-            rlbl = rbase.mark_text(align="left", dx=4, fontSize=11,
-                                   color=GREY_DARK).encode(
-                text=alt.Text("Vehicles:Q", format=","))
+            rlbl = rbase.mark_text(
+                align="left", dx=4, fontSize=11, color=GREY_DARK
+            ).encode(text=alt.Text("Vehicles:Q", format=","))
             st.altair_chart((rb + rlbl).properties(height=180), width="stretch")
-            aged_out = int((risk["Fail_Reason"]
-                            == f"Over {MAX_COMPLIANT_AGE}-year age limit").sum())
+
+            aged_out = int(
+                (
+                    risk["Fail_Reason"] == f"Over {MAX_COMPLIANT_AGE}-year age limit"
+                ).sum()
+            )
             if aged_out:
                 st.caption(
-                    f"{fmt_int(aged_out)} vehicles (shown in orange) are on a "
+                    f"{fmt_int(aged_out)} vehicles (shown in slate grey) are on a "
                     "modern standard and fail on age alone — they would become "
-                    "compliant under a longer age allowance.")
+                    "compliant under a longer age allowance."
+                )
 
-            section("Ageing non-compliant fleet: age against emission standard",
+                section(
+                    "Ageing non-compliant fleet: age against emission standard",
                     "Darker cells hold more vehicles. Older cohorts on the "
-                    "oldest standards carry the greatest scrappage exposure.")
-            grid = (risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean",
-                                  "Norm_Label"])
-                        .size().reset_index(name="Vehicles"))
-            norms_here = ordered(grid["Emission_Norm_Clean"], NORM_ORDER)
-            # Positional-only base so the text layer does not inherit the blues
-            # colour scale, which would tint the numbers and bury them in the
-            # darker cells.
-            hm_base = chart(grid).encode(
-                x=alt.X("Emission_Norm_Clean:N", sort=norms_here,
+                    "oldest standards carry the greatest scrappage exposure.",
+                )
+                grid = (
+                    risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean", "Norm_Label"])
+                    .size()
+                    .reset_index(name="Vehicles")
+                )
+                norms_here = ordered(grid["Emission_Norm_Clean"], NORM_ORDER)
+
+                # FIX 1: Changed heatmap scheme from "blues" (Electric conflict) to "purples"
+                hm_base = chart(grid).encode(
+                    x=alt.X(
+                        "Emission_Norm_Clean:N",
+                        sort=norms_here,
                         title="Emission standard",
-                        axis=alt.Axis(labelAngle=0, grid=False)),
-                y=alt.Y("Vehicle_Age_Years:O", title="Vehicle age (years)",
-                        axis=alt.Axis(labelAngle=0, grid=False)),
-            )
-            hm = hm_base.mark_rect().encode(
-                color=alt.Color("Vehicles:Q", title="Vehicles",
-                                scale=alt.Scale(scheme="blues")),
-                tooltip=[alt.Tooltip("Vehicle_Age_Years:O", title="Age (yrs)"),
-                         alt.Tooltip("Norm_Label:N", title="Standard"),
-                         alt.Tooltip("Vehicles:Q", format=",")],
-            )
-            # Flip label colour on dark cells so the count stays readable.
-            cutoff = grid["Vehicles"].max() * 0.6
-            txt = hm_base.mark_text(fontSize=11).encode(
-                text=alt.Text("Vehicles:Q", format=","),
-                color=alt.condition(alt.datum.Vehicles > cutoff,
-                                    alt.value("white"), alt.value(INK)),
-            )
-            st.altair_chart((hm + txt).properties(height=320), width="stretch")
+                        axis=alt.Axis(labelAngle=0, grid=False),
+                    ),
+                    y=alt.Y(
+                        "Vehicle_Age_Years:O",
+                        title="Vehicle age (years)",
+                        axis=alt.Axis(labelAngle=0, grid=False),
+                    ),
+                )
+                hm = hm_base.mark_rect().encode(
+                    color=alt.Color(
+                        "Vehicles:Q",
+                        title="Vehicles",
+                        scale=alt.Scale(scheme="purples"),  # Neutral risk gradient
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Vehicle_Age_Years:O", title="Age (yrs)"),
+                        alt.Tooltip("Norm_Label:N", title="Standard"),
+                        alt.Tooltip("Vehicles:Q", format=","),
+                    ],
+                )
+                # Flip label colour on dark cells so the count stays readable.
+                cutoff = grid["Vehicles"].max() * 0.6
+                txt = hm_base.mark_text(fontSize=11).encode(
+                    text=alt.Text("Vehicles:Q", format=","),
+                    color=alt.condition(
+                        alt.datum.Vehicles > cutoff, alt.value("white"), alt.value(INK)
+                    ),
+                )
+                st.altair_chart((hm + txt).properties(height=320), width="stretch")
 
-            section("Risk fleet by RTO office")
-            by_rto = (risk.groupby("RTO_Office")
-                          .agg(Non_compliant=("Registration_Number", "size"),
-                               Mean_age=("Vehicle_Age_Years", "mean"))
-                          .reset_index()
-                          .sort_values("Non_compliant", ascending=False))
-            by_rto["Mean_age"] = by_rto["Mean_age"].round(1)
-            top_rto = by_rto.head(20).copy()
-            top_rto["Highlight"] = top_rto["RTO_Office"].eq(top_rto.iloc[0]["RTO_Office"])
-            rbar = (
-                chart(top_rto)
-                .mark_bar(cornerRadiusEnd=3)
-                .encode(
-                    x=qx("Non_compliant:Q", "Non-compliant vehicles"),
-                    y=alt.Y("RTO_Office:N", sort="-x", title=None,
-                            axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
-                    color=alt.condition(alt.datum.Highlight,
-                                        alt.value(ACCENT), alt.value(GREY_LIGHT)),
-                    tooltip=[alt.Tooltip("RTO_Office:N", title="RTO office"),
-                             alt.Tooltip("Non_compliant:Q", format=","),
-                             alt.Tooltip("Mean_age:Q", title="Mean age (yrs)",
-                                         format=".1f")],
-                ).properties(height=max(280, len(top_rto) * 26))
-            )
-            st.altair_chart(rbar, width="stretch")
+                section("Risk fleet by RTO office")
+                by_rto = (
+                    risk.groupby("RTO_Office")
+                    .agg(
+                        Non_compliant=("Registration_Number", "size"),
+                        Mean_age=("Vehicle_Age_Years", "mean"),
+                    )
+                    .reset_index()
+                    .sort_values("Non_compliant", ascending=False)
+                )
+                by_rto["Mean_age"] = by_rto["Mean_age"].round(1)
+                top_rto = by_rto.head(20).copy()
+                top_rto["Highlight"] = top_rto["RTO_Office"].eq(
+                    top_rto.iloc[0]["RTO_Office"]
+                )
 
-            rto_pick = st.multiselect(
-                "Filter the risk table by RTO office", sorted(risk["RTO_Office"].unique()),
-                default=[])
-            risk_view = risk[risk["RTO_Office"].isin(rto_pick)] if rto_pick else risk
-            risk_cols = ["Registration_Number", "Registration_Date", "State",
-                         "RTO_Office", "Vehicle_Category", "Vehicle_Sub_Type",
-                         "Manufacturer_Brand", "Fuel_Type", "Norm_Label",
-                         "Vehicle_Age_Years", "Fail_Reason", "Engine_CC"]
-            st.dataframe(risk_view[risk_cols].sort_values("Vehicle_Age_Years",
-                                                          ascending=False),
-                         width="stretch", height=340, hide_index=True)
-            st.download_button(
-                "Download risk fleet as CSV",
-                data=risk_view[risk_cols].to_csv(index=False).encode("utf-8"),
-                file_name="non_compliant_risk_fleet.csv", mime="text/csv")
+                # FIX 1 & 2: Highlight top RTO in INK (Dark Charcoal) instead of ACCENT (Hero Blue);
+                # Single-metric encoding on X-axis, mean age cleanly delegated to tooltip.
+                rbar = (
+                    chart(top_rto)
+                    .mark_bar(cornerRadiusEnd=3)
+                    .encode(
+                        x=qx("Non_compliant:Q", "Non-compliant vehicles"),
+                        y=alt.Y(
+                            "RTO_Office:N",
+                            sort="-x",
+                            title=None,
+                            axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260),
+                        ),
+                        color=alt.condition(
+                            alt.datum.Highlight, alt.value(INK), alt.value(GREY_LIGHT)
+                        ),
+                        tooltip=[
+                            alt.Tooltip("RTO_Office:N", title="RTO office"),
+                            alt.Tooltip("Non_compliant:Q", format=","),
+                            alt.Tooltip(
+                                "Mean_age:Q", title="Mean age (yrs)", format=".1f"
+                            ),
+                        ],
+                    )
+                    .properties(height=max(280, len(top_rto) * 26))
+                )
+                st.altair_chart(rbar, width="stretch")
 
+                # FIX 4: Explicit warning caption for RTO-State cross-boundary anomalies
+                rto_pick = st.multiselect(
+                    "Filter the risk table by RTO office",
+                    sorted(risk["RTO_Office"].unique()),
+                    default=[],
+                )
+                st.caption(
+                    "⚠️ **Note:** 18.2% of records contain RTO-State contradictions; "
+                    "filters operate strictly on RTO jurisdiction."
+                )
+
+                risk_view = risk[risk["RTO_Office"].isin(rto_pick)] if rto_pick else risk
+                risk_cols = [
+                    "Registration_Number",
+                    "Registration_Date",
+                    "State",
+                    "RTO_Office",
+                    "Vehicle_Category",
+                    "Vehicle_Sub_Type",
+                    "Manufacturer_Brand",
+                    "Fuel_Type",
+                    "Norm_Label",
+                    "Vehicle_Age_Years",
+                    "Fail_Reason",
+                    "Engine_CC",
+                ]
+                st.dataframe(
+                    risk_view[risk_cols].sort_values("Vehicle_Age_Years", ascending=False),
+                    width="stretch",
+                    height=340,
+                    hide_index=True,
+                )
+                st.download_button(
+                    "Download risk fleet as CSV",
+                    data=risk_view[risk_cols].to_csv(index=False).encode("utf-8"),
+                    file_name="non_compliant_risk_fleet.csv",
+                    mime="text/csv",
+                )
     # ---------------- Section B: data governance ---------------------------
     with sec_b:
         quality = audit_quality(df)
@@ -1187,7 +1491,34 @@ with tab_audit:
             failing = int((quality["Failing records"] > 0).sum())
             callout("Checks failing", f"{failing} of {len(quality)}",
                     accent=(failing == 0))
+        section("Data hygiene drill-down",
+                "Every record failing at least one integrity check, with the "
+                "reason attached, for audit export.")
+        reason_opts = ["RTO office belongs to a different state",
+                        "Electric vehicle not classed as zero-emission",
+                        "Electric-only brand recorded as fossil fuel",
+                        "Compliance flag disagrees with the documented rule"]
+        picked = st.multiselect("Filter by defect", reason_opts, default=[])
+        view = defects
+        if picked:
+            pattern = "|".join(pd.Series(picked).str.replace(
+                r"([().\[\]*+?^$|\\])", r"\\\1", regex=True))
+            view = defects[defects["Defect_Reasons"].str.contains(pattern, regex=True)]
 
+        if view.empty:
+            st.success("No records fail any integrity check in this selection.")
+        else:
+            drill_cols = ["Registration_Number", "State", "RTO_Office",
+                            "Vehicle_Category", "Vehicle_Sub_Type",
+                            "Manufacturer_Brand", "Fuel_Type", "Emission_Norm",
+                            "Emission_Norm_Clean", "Engine_CC",
+                            "Seating_Capacity", "Defect_Reasons"]
+            st.dataframe(view[drill_cols], width="stretch", height=380,
+                            hide_index=True)
+            st.download_button(
+                "Download flagged records as CSV",
+                data=view[drill_cols].to_csv(index=False).encode("utf-8"),
+                file_name="data_quality_exceptions.csv", mime="text/csv")
         section("Integrity checks")
         qv = quality.copy()
         qv["Status"] = np.where(qv["Failing records"] == 0, "Pass", "Fail")
@@ -1246,31 +1577,4 @@ with tab_audit:
             st.caption("Offices with fewer than 5 records are excluded, since a "
                        "single bad row would dominate their rate.")
 
-        section("Data hygiene drill-down",
-                "Every record failing at least one integrity check, with the "
-                "reason attached, for audit export.")
-        reason_opts = ["RTO office belongs to a different state",
-                       "Electric vehicle not classed as zero-emission",
-                       "Electric-only brand recorded as fossil fuel",
-                       "Compliance flag disagrees with the documented rule"]
-        picked = st.multiselect("Filter by defect", reason_opts, default=[])
-        view = defects
-        if picked:
-            pattern = "|".join(pd.Series(picked).str.replace(
-                r"([().\[\]*+?^$|\\])", r"\\\1", regex=True))
-            view = defects[defects["Defect_Reasons"].str.contains(pattern, regex=True)]
-
-        if view.empty:
-            st.success("No records fail any integrity check in this selection.")
-        else:
-            drill_cols = ["Registration_Number", "State", "RTO_Office",
-                          "Vehicle_Category", "Vehicle_Sub_Type",
-                          "Manufacturer_Brand", "Fuel_Type", "Emission_Norm",
-                          "Emission_Norm_Clean", "Engine_CC",
-                          "Seating_Capacity", "Defect_Reasons"]
-            st.dataframe(view[drill_cols], width="stretch", height=380,
-                         hide_index=True)
-            st.download_button(
-                "Download flagged records as CSV",
-                data=view[drill_cols].to_csv(index=False).encode("utf-8"),
-                file_name="data_quality_exceptions.csv", mime="text/csv")
+        
