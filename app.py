@@ -56,6 +56,7 @@ Run with:
     streamlit run app.py
 """
 
+import math
 from pathlib import Path
 
 import altair as alt
@@ -94,6 +95,7 @@ ACCENT_ALT = theme.ACCENT_ALT
 GREY_DARK = theme.GREY_DARK
 GREY_MID = theme.GREY_MID
 GREY_LIGHT = theme.GREY_LIGHT
+GREY_FAINT = theme.GREY_FAINT
 INK = theme.INK
 
 CLEAN_FUELS = theme.CLEAN_FUELS
@@ -107,6 +109,36 @@ def ordered(values, preferred):
     known = [v for v in preferred if v in present]
     extra = sorted(present.difference(preferred), key=str)
     return known + extra
+
+
+def selection_values(state, param, field) -> list:
+    """Values of `field` selected in the chart parameter `param`.
+
+    Payload shape matters and is easy to get wrong. Streamlit's frontend
+    listens to the Vega signal and, for a point selection, forwards
+    `signal.vlPoint.or` - a LIST OF ROW DICTS. Both of these occur:
+
+        [{"Registration_Year": 2020}]            scalar value  (mark click)
+        [{"Fuel_Type": ["Electric", "CNG"]}]     list value    (legend click)
+
+    NOT {"Fuel_Type": [...]}. Selections that resolve without a `vlPoint`
+    wrapper forward the raw signal object instead, which does use the
+    field-to-list form, so accept that too. An empty selection arrives as
+    `{}`. Anything else is genuinely unexpected and is allowed to raise
+    rather than silently reporting "nothing selected".
+    """
+    raw = (state or {}).get("selection", {}).get(param) or []
+    found = []
+    if isinstance(raw, list):            # [{field: value}, ...]
+        for row in raw:
+            if isinstance(row, dict) and field in row:
+                val = row[field]
+                found.extend(val if isinstance(val, list) else [val])
+    elif isinstance(raw, dict):          # {field: [values]}
+        val = raw.get(field, [])
+        found.extend(val if isinstance(val, list) else [val])
+    seen = set()
+    return [v for v in found if not (v in seen or seen.add(v))]
 
 
 def colors_for(values, palette):
@@ -560,11 +592,25 @@ with tab_macro:
     # =========================================================================
     # DRILL-DOWN Navigation (Year -> Quarter -> Month)
     #
-    # Driven by widgets rather than chart clicks: Streamlit cannot return
-    # selection events from a layered chart, and this compound chart is a
-    # bar + line layer. The scope selectors below give the same hierarchy
-    # with state that survives a rerun.
+    # Two ways in, one source of truth. Clicking a point on the total-trend
+    # line drills one level deeper; the selectors below do the same thing and
+    # are also the way back out.
+    #
+    # The click cannot write to the selector keys directly: by the time the
+    # chart is rendered those widgets already exist this run, and Streamlit
+    # refuses writes to an instantiated widget's key. So a click parks its
+    # target in `_drill_pending` and reruns, and the block below - which runs
+    # before the widgets are built - applies it. Guarded with `pop`, so a
+    # pending target is consumed exactly once.
     # =========================================================================
+    _pending = st.session_state.pop("_drill_pending", None)
+    if _pending:
+        st.session_state["drill_grain"] = _pending["grain"]
+        if _pending.get("year") is not None:
+            st.session_state["drill_year_pick"] = _pending["year"]
+        if _pending.get("quarter") is not None:
+            st.session_state["drill_quarter_pick"] = _pending["quarter"]
+
     st.markdown("**\U0001F4C5 Time detail**")
     drill_col = st.columns([1, 1, 1])
     with drill_col[0]:
@@ -607,12 +653,24 @@ with tab_macro:
         time_title = f"Month ({drill_quarter})"
         drill_df = df[df["Quarter"] == drill_quarter].copy()
 
+    # A manual grain change invalidates the "already handled this click"
+    # marker, so the same period can be drilled into again after backing out.
+    if st.session_state.get("_drill_prev_grain") != grain:
+        st.session_state["_drill_prev_grain"] = grain
+        st.session_state.pop("_drill_last", None)
+
     breadcrumb = "Year"
     if grain in ("Quarter", "Month"):
         breadcrumb += f" \u203A {drill_year}"
     if grain == "Month":
         breadcrumb += f" \u203A {drill_quarter}"
-    st.caption(f"Showing: {breadcrumb}")
+    next_level = {"Year": "quarters", "Quarter": "months"}.get(grain)
+    st.caption(
+        f"Showing: {breadcrumb}"
+        + (f" \u00B7 click a point on the trend line to drill into {next_level}"
+           if next_level else " \u00B7 deepest level; use the selectors above "
+                              "to go back")
+    )
 
     if drill_df.empty:
         st.info("No data at this drill level. Choose a different period, or go "
@@ -621,6 +679,28 @@ with tab_macro:
         # Aggregate for the compound chart
         fuel_year = (drill_df.groupby([time_field, "Fuel_Type"])
                     .size().reset_index(name="Registrations"))
+
+        # A powertrain with no registrations in a period is a real zero, not
+        # missing data. `groupby` drops those combinations entirely, which
+        # makes the line for a small series stop dead mid-chart - Hybrid
+        # disappearing after a month with no hybrid sales, rather than falling
+        # to 0%. Reindex onto the full period x powertrain grid so every
+        # series spans the whole axis.
+        #
+        # The grid is built from periods that already appear in `fuel_year`,
+        # so every period is guaranteed at least one registration and the
+        # share denominator below can never be zero.
+        _periods_here = sorted(fuel_year[time_field].unique())
+        _fuels_present = ordered(fuel_year["Fuel_Type"], FUEL_ORDER)
+        fuel_year = (
+            fuel_year.set_index([time_field, "Fuel_Type"])
+                     .reindex(pd.MultiIndex.from_product(
+                         [_periods_here, _fuels_present],
+                         names=[time_field, "Fuel_Type"]),
+                         fill_value=0)
+                     .reset_index()
+        )
+
         total_year = (fuel_year.groupby(time_field)["Registrations"]
                             .sum().reset_index(name="Total_Registrations"))
         fuel_year = fuel_year.merge(total_year, on=time_field)
@@ -628,8 +708,9 @@ with tab_macro:
         fuels_here = ordered(fuel_year["Fuel_Type"], FUEL_ORDER)
 
         # =====================================================================
-        # Legend-bound highlighting (client side) + advanced tooltips.
-        # Clicking a fuel in the legend dims the rest; shift-click adds to it.
+        # Chart A - VOLUME. Stacked bars carry the absolute registration count
+        # per period, with the total as a line overlay. Legend-bound selection:
+        # clicking a fuel dims the rest, shift-click adds to the set.
         # =====================================================================
         fuel_selection = alt.selection_point(
             fields=["Fuel_Type"], bind="legend",  # Cross-filter: click legend
@@ -663,65 +744,404 @@ with tab_macro:
             .add_params(fuel_selection)
         )
 
-        # --- Layer 2: Total Trend Line Overlay ---
+        # --- Layer 2: Total Trend Line Overlay (also the drill-down handle) ---
+        # `drill_select` fires on a click anywhere on this layer; the points
+        # are the realistic hit target, so they are enlarged and given a
+        # pointer cursor at any level that still has somewhere to drill to.
+        can_drill = grain in ("Year", "Quarter")
+        drill_select = alt.selection_point(
+            fields=[time_field], name="drill_select", on="click", clear="dblclick"
+        )
         line_chart = (
             alt.Chart(total_year)
-            .mark_line(color=INK, strokeWidth=2,
-                       point=alt.OverlayMarkDef(color=INK, size=50))
+            .mark_line(
+                color=INK, strokeWidth=2,
+                point=alt.OverlayMarkDef(
+                    color=INK, size=110 if can_drill else 50,
+                    cursor="pointer" if can_drill else "default"),
+            )
             .encode(
                 x=alt.X(f"{time_field}{time_type}"),
                 y=alt.Y("Total_Registrations:Q"),
                 tooltip=[
                     alt.Tooltip(f"{time_field}{time_type}", title=time_title),
-                    alt.Tooltip("Total_Registrations:Q", title="Total", format=",")
+                    alt.Tooltip("Total_Registrations:Q", title="Total", format=","),
                 ]
             )
         )
+        if can_drill:
+            line_chart = line_chart.add_params(drill_select)
 
         # --- Combine into Compound Chart ---
-        # Layered chart: rendered without on_select, since Streamlit cannot
-        # return selection events from a chart composition.
+        # `on_select="rerun"` returns the legend selection to Python, so the
+        # same click can drive the share chart below. Streamlit resolves
+        # selection parameters recursively through `layer`, so a compound
+        # chart is fine here.
         compound_chart = alt.layer(bar_chart, line_chart).properties(height=400)
-        st.altair_chart(compound_chart, use_container_width=True)
+        # One key for both parameters: the legend highlight and the drill
+        # click come back in the same payload. A stable key is what lets the
+        # fuel highlight survive a drill.
+        volume_state = st.altair_chart(
+            compound_chart, use_container_width=True,
+            on_select="rerun", key="volume_chart_select")
+
+        # Read the selections back out. See `selection_values` for the
+        # payload shape - it is not the obvious one.
+        _known_fuels = set(fuel_year["Fuel_Type"])
+        highlighted = [f for f in
+                       selection_values(volume_state, "fuel_highlight", "Fuel_Type")
+                       if f in _known_fuels]
+
+        # Drill-down click: the time-field value on the point that was hit.
+        _periods = selection_values(volume_state, "drill_select", time_field)
+        clicked = _periods[0] if _periods else None
+        if can_drill and clicked is not None:
+            # A stale payload from the previous grain cannot match, because
+            # the field name is looked up per grain. This marker guards the
+            # other case: the same click being replayed on every rerun.
+            token = (grain, str(clicked))
+            if st.session_state.get("_drill_last") != token:
+                st.session_state["_drill_last"] = token
+                if grain == "Year" and int(clicked) in years_here:
+                    st.session_state["_drill_pending"] = {
+                        "grain": "Quarter", "year": int(clicked)}
+                    st.rerun()
+                elif grain == "Quarter":
+                    _q = str(clicked)
+                    _qs = sorted(df.loc[df["Registration_Year"] == drill_year,
+                                        "Quarter"].unique())
+                    if _q in _qs:
+                        st.session_state["_drill_pending"] = {
+                            "grain": "Month", "year": drill_year, "quarter": _q}
+                        st.rerun()
+
+        if highlighted:
+            st.caption(
+                f"Highlighting **{', '.join(highlighted)}** in both charts. "
+                "Shift-click the legend to add more; click the highlighted "
+                "entry again to clear."
+            )
+        else:
+            st.caption(
+                "Click a fuel in the legend to isolate it in this chart *and* "
+                "the share chart below; shift-click to add more."
+                + (f" Click a point on the dark trend line to drill into "
+                   f"{next_level}." if can_drill else "")
+                + " Use the sidebar fuel filter to cross-filter every chart."
+            )
+
+        st.markdown("")
+
+        # =====================================================================
+        # Chart B - MIX. The bars above answer "how many"; stacking means they
+        # cannot also answer "what proportion, and moving which way". This
+        # second view takes the same aggregation and reads it as share.
+        #
+        # Powertrain share over time - multi-line, direct-labelled.
+        #
+        # Why lines here rather than a second stacked form:
+        #   Stacking gives every band except the bottom one a moving baseline,
+        #   so a segment's thickness and its apparent slope disagree. The
+        #   clean-fuel bands are the thin ones, so they are exactly the ones
+        #   the distortion ruins. Lines put all five powertrains on the shared
+        #   X baseline: relative position at any period is read directly, and
+        #   each trajectory is its own honest slope. That is the job the bars
+        #   above cannot do, which is why both views earn their space.
+        #
+        # Why it does not become a spaghetti chart:
+        #   The palette is grey-first. Petrol and Diesel are neutral greys on a
+        #   thin stroke and reduced opacity, so they read as context. CNG,
+        #   Hybrid and Electric keep saturated hues on a heavier stroke and pop
+        #   preattentively. Five lines, but only three compete for attention.
+        #
+        # Decluttering (data-ink):
+        #   - No legend. Each line is labelled at its own endpoint in its own
+        #     colour: Gestalt proximity binds label to line, similarity binds
+        #     colour to identity, and the eye never leaves the plot to decode.
+        #   - No view border and no Y-axis domain rule. Closure supplies the
+        #     frame that the ink no longer has to draw.
+        #   - Horizontal gridlines only, in the faintest grey in the palette.
+        #   - All text horizontal. Rotated labels cost 50-200% in reading speed
+        #     and buy nothing.
+        #   - One marker per line, at the final point, as a focus anchor.
+        # =====================================================================
+
+        # Emphasis is precomputed per row so stroke weight and opacity can be
+        # encoded straight off the data (scale=None passes the value through).
+        #
+        # Two regimes. With nothing selected, the resting state is grey-first:
+        # clean fuels forward, Petrol and Diesel back. Once the legend above
+        # has a selection, that selection wins outright - a highlighted Petrol
+        # must come to the front, or the click would appear not to work. The
+        # colour encoding is identical across both charts, so the same click
+        # reads the same way in each.
+        if highlighted:
+            _is_hl = fuel_year["Fuel_Type"].isin(highlighted)
+            fuel_year["Stroke"] = np.where(_is_hl, 3.0, 1.0)
+            fuel_year["Emphasis"] = np.where(_is_hl, 1.0, 0.15)
+        else:
+            fuel_year["Stroke"] = np.where(
+                fuel_year["Fuel_Type"].isin(CLEAN_FUELS), 2.6, 1.4)
+            fuel_year["Emphasis"] = np.where(
+                fuel_year["Fuel_Type"].isin(CLEAN_FUELS), 1.0, 0.55)
+
+        fuel_scale = alt.Scale(domain=fuels_here,
+                               range=colors_for(fuels_here, FUEL_COLOR))
+        # legend=None: identity is carried by the endpoint labels instead.
+        fuel_color = alt.Color("Fuel_Type:N", scale=fuel_scale,
+                               sort=fuels_here, legend=None)
+
+        share_x = alt.X(
+            f"{time_field}{time_type}", title=time_title,
+            axis=alt.Axis(labelAngle=0, grid=False, labelColor=INK,
+                          titleColor=INK, domainColor=GREY_LIGHT,
+                          tickColor=GREY_LIGHT))
+        # Y domain is pinned to an explicit 5-point ceiling rather than left to
+        # `nice`, so the label de-collision below can do exact pixel maths.
+        SHARE_PLOT_H = 420
+        _share_peak = float(fuel_year["Share"].max())
+        share_ymax = max(0.05, math.ceil(_share_peak * 20) / 20)
+        if share_ymax - _share_peak < 0.01:   # keep the peak off the ceiling
+            share_ymax += 0.05
+        share_ymax = min(1.0, share_ymax)
+        share_y = alt.Y(
+            "Share:Q", title="Share of period registrations",
+            scale=alt.Scale(domain=[0, share_ymax], nice=False, zero=True),
+            axis=alt.Axis(format=".0%", labelAngle=0, labelColor=INK,
+                          titleColor=INK, grid=True, gridColor=GREY_FAINT,
+                          domain=False, ticks=False, gridWidth=1))
+
+        share_tooltip = [
+            alt.Tooltip(f"{time_field}{time_type}", title=time_title),
+            alt.Tooltip("Fuel_Type:N", title="Fuel"),
+            alt.Tooltip("Share:Q", title="Share of period", format=".1%"),
+            alt.Tooltip("Registrations:Q", title="Registrations", format=","),
+        ]
+
+        # --- Layer 1: the five trend lines --------------------------------
+        # Linear, not a smoothed spline: a monotone curve invents values
+        # between periods that were never measured. Straight segments claim
+        # only what the data says.
+        share_lines = (
+            alt.Chart(fuel_year)
+            .mark_line(interpolate="linear", strokeCap="round",
+                       strokeJoin="round")
+            .encode(
+                x=share_x, y=share_y, color=fuel_color,
+                strokeWidth=alt.StrokeWidth("Stroke:Q", scale=None),
+                opacity=alt.Opacity("Emphasis:Q", scale=None),
+                detail="Fuel_Type:N",
+            )
+        )
+
+        # --- Layer 2: single highlight dot at the final period -------------
+        last_period = sorted(fuel_year[time_field].unique())[-1]
+        endpoints = fuel_year[fuel_year[time_field] == last_period].copy()
+
+        # Direct labelling only works if the labels are legible. Where two
+        # powertrains finish within a label's height of each other (Electric
+        # and Diesel routinely do), nudge the lower one further down until
+        # they clear. The dot stays on the true value; only the text moves,
+        # and never by more than a line height, so nothing is misread.
+        LABEL_GAP_PX = 16
+        endpoints = endpoints.sort_values("Share", ascending=False)
+        _y_px = ((1 - endpoints["Share"] / share_ymax) * SHARE_PLOT_H).tolist()
+        _adjusted, _prev = [], -1e9
+        for _p in _y_px:                       # already top-to-bottom
+            _p = max(_p, _prev + LABEL_GAP_PX)
+            _adjusted.append(_p)
+            _prev = _p
+        # Back to data units. The nudged value is written into `Share` on a
+        # copy used only by the label layer, and the true value is kept in
+        # `Share_Actual` for the label text. Reusing the same field name lets
+        # the label layer share `share_y` verbatim - a second Y encoding with
+        # its own axis spec would win the layer merge and blank the Y axis.
+        # (A yOffset channel with scale=None compiles but does not displace.)
+        label_df = endpoints.copy()
+        label_df["Share_Actual"] = label_df["Share"]
+        label_df["Share"] = [(1 - _p / SHARE_PLOT_H) * share_ymax
+                             for _p in _adjusted]
+
+        share_dots = (
+            alt.Chart(endpoints)
+            .mark_point(filled=True, size=70)
+            .encode(x=share_x, y=share_y, color=fuel_color,
+                    opacity=alt.Opacity("Emphasis:Q", scale=None),
+                    tooltip=share_tooltip)
+        )
+
+        # --- Layer 3: direct labels, colour-matched, replacing the legend ---
+        share_labels = (
+            alt.Chart(label_df)
+            .mark_text(align="left", dx=10, baseline="middle",
+                       fontSize=12, fontWeight=600, clip=False)
+            .encode(
+                x=share_x, y=share_y, color=fuel_color,
+                opacity=alt.Opacity("Emphasis:Q", scale=None),
+                text=alt.Text("Label:N"),
+            )
+            .transform_calculate(
+                Label=("datum.Fuel_Type + '  ' "
+                       "+ format(datum.Share_Actual, '.1%')"))
+        )
+
+        # --- Layer 4: invisible hit targets so every point is hoverable ----
+        share_hover = (
+            alt.Chart(fuel_year)
+            .mark_circle(size=120, opacity=0)
+            .encode(x=share_x, y=share_y, tooltip=share_tooltip)
+        )
+
+        # --- Action title, derived from the data rather than asserted ------
+        share_wide = (fuel_year.pivot_table(index=time_field,
+                                            columns="Fuel_Type",
+                                            values="Share", aggfunc="sum")
+                      .sort_index())
+
+        def _share_delta(fuel):
+            if fuel not in share_wide.columns or len(share_wide) < 2:
+                return 0.0
+            col = share_wide[fuel].dropna()
+            return float(col.iloc[-1] - col.iloc[0]) if len(col) >= 2 else 0.0
+
+        risers = sorted((f for f in CLEAN_FUELS if f in share_wide.columns),
+                        key=_share_delta, reverse=True)
+        fallers = sorted((f for f in ("Diesel", "Petrol")
+                          if f in share_wide.columns), key=_share_delta)
+
+        top_riser = risers[0] if risers else None
+        top_faller = fallers[0] if fallers else None
+        if (top_riser and top_faller
+                and _share_delta(top_riser) > 0 > _share_delta(top_faller)):
+            share_title = (
+                f"{top_riser} gains {fmt_pp(_share_delta(top_riser))} of share "
+                f"as {top_faller} gives up {fmt_pp(_share_delta(top_faller))}")
+        elif top_riser and _share_delta(top_riser) > 0:
+            share_title = (f"{top_riser} share is up "
+                           f"{fmt_pp(_share_delta(top_riser))} over the period")
+        else:
+            share_title = "Powertrain mix has held roughly flat this period"
+
+        share_chart = (
+            alt.layer(share_lines, share_hover, share_dots, share_labels)
+            .properties(
+                height=SHARE_PLOT_H,
+                padding={"left": 5, "top": 5, "right": 108, "bottom": 5},
+                title=alt.TitleParams(
+                    text=share_title,
+                    # Subtitle has to describe whichever emphasis regime is
+                    # actually on screen, or it contradicts the chart.
+                    subtitle=(
+                        f"Share of registrations by powertrain. Highlighting "
+                        f"{', '.join(highlighted)} from the legend above."
+                        if highlighted else
+                        "Share of registrations by powertrain. Petrol and "
+                        "Diesel greyed as baseline; clean fuels highlighted."),
+                    anchor="start", align="left", fontSize=16,
+                    subtitleColor=GREY_DARK, color=INK),
+            )
+            .configure_view(strokeWidth=0)   # drop the top and right border
+        )
+        st.altair_chart(share_chart, use_container_width=True)
         st.caption(
-            "Click a fuel in the legend to isolate it; shift-click to add more. "
-            "Use the sidebar fuel filter to cross-filter every chart at once."
+            "Same periods, same colours and the same legend selection as the "
+            "bars above, read as share of the mix instead of volume. Lines are "
+            "labelled at their endpoints, so there is no second legend to look "
+            "up; hover any point for the exact share and count."
         )
 
     st.divider()
 
     cvc, cen = st.columns([1, 1])
 
-    # --- Chart 1b: registrations by vehicle category ------------------------
+    # --- Chart 1b: registrations by vehicle category (with drill-down) ------
+    #
+    # Category -> sub-type. Clicking a bar drills in; an explicit button
+    # comes back out.
+    #
+    # The drilled category lives in `_cat_drill`, a plain session key, not
+    # in the chart's widget key: a widget key cannot be written to once its
+    # widget exists, and the category chart is not even rendered while
+    # drilled in. Coming back bumps `_cat_nonce`, which changes the chart's
+    # key and hands it a fresh, empty selection - otherwise the stale click
+    # would still be in the payload and would immediately re-drill.
     with cvc:
-        cat_counts = (df.groupby(["Vehicle_Category", "Category_Plain"])
-                        .size().reset_index(name="Registrations")
-                        .sort_values("Registrations", ascending=False))
+        cat_drill = st.session_state.get("_cat_drill")
+        _cats_now = set(df["Category_Plain"].dropna())
 
-        section("Registrations by vehicle category",
-                "Similarity: bars share one hue, so the eye compares length, "
-                "not colour.")
+        # A sidebar filter change can strip the drilled category out of the
+        # data underneath us. Fall back rather than render an empty panel.
+        if cat_drill and cat_drill not in _cats_now:
+            cat_drill = None
+            st.session_state.pop("_cat_drill", None)
 
-        # FEATURE 2: selection_point for cross-highlighting categories
-        cat_selection = alt.selection_point(fields=["Category_Plain"], name="cat_sel")
+        if cat_drill:
+            section(f"Registrations by sub-type - {cat_drill}",
+                    "Drilled in from vehicle category.")
+            if st.button("← All categories", key="cat_drill_back"):
+                st.session_state.pop("_cat_drill", None)
+                st.session_state["_cat_nonce"] = \
+                    st.session_state.get("_cat_nonce", 0) + 1
+                st.rerun()
 
-        cat_base = chart(cat_counts).encode(
-            x=qx("Registrations:Q", "Registrations", fmt=","),
-            y=alt.Y("Category_Plain:N", sort="-x", title=None,
-                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
-        )
-        # FEATURE 4: highlight selected category bar, dim others
-        cat_bars = cat_base.mark_bar(cornerRadiusEnd=3).encode(
-            color=alt.condition(cat_selection, alt.value(ACCENT), alt.value(GREY_LIGHT)),
-            tooltip=[alt.Tooltip("Category_Plain:N", title="Category"),
-                     alt.Tooltip("Registrations:Q", format=",")],
-        ).add_params(cat_selection)
-        cat_lbl = cat_base.mark_text(align="left", dx=4, fontSize=11,
-                                     color=GREY_DARK).encode(
-            text=alt.Text("Registrations:Q", format=","))
+            sub_counts = (df[df["Category_Plain"] == cat_drill]
+                          .groupby("Vehicle_Sub_Type")
+                          .size().reset_index(name="Registrations")
+                          .sort_values("Registrations", ascending=False))
 
-        st.altair_chart((cat_bars + cat_lbl).properties(height=260),
-                        use_container_width=True)
+            sub_base = chart(sub_counts).encode(
+                x=qx("Registrations:Q", "Registrations", fmt=","),
+                y=alt.Y("Vehicle_Sub_Type:N", sort="-x", title=None,
+                        axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+            )
+            sub_bars = sub_base.mark_bar(cornerRadiusEnd=3, color=ACCENT).encode(
+                tooltip=[alt.Tooltip("Vehicle_Sub_Type:N", title="Sub-type"),
+                         alt.Tooltip("Registrations:Q", format=",")],
+            )
+            sub_lbl = sub_base.mark_text(align="left", dx=4, fontSize=11,
+                                         color=GREY_DARK).encode(
+                text=alt.Text("Registrations:Q", format=","))
+
+            st.altair_chart((sub_bars + sub_lbl).properties(height=260),
+                            use_container_width=True)
+            st.caption(f"{len(sub_counts)} sub-types within {cat_drill}.")
+
+        else:
+            cat_counts = (df.groupby(["Vehicle_Category", "Category_Plain"])
+                            .size().reset_index(name="Registrations")
+                            .sort_values("Registrations", ascending=False))
+
+            section("Registrations by vehicle category",
+                    "Similarity: bars share one hue, so the eye compares "
+                    "length, not colour. Click a bar to drill into sub-types.")
+
+            cat_selection = alt.selection_point(fields=["Category_Plain"],
+                                                name="cat_sel")
+
+            cat_base = chart(cat_counts).encode(
+                x=qx("Registrations:Q", "Registrations", fmt=","),
+                y=alt.Y("Category_Plain:N", sort="-x", title=None,
+                        axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+            )
+            cat_bars = cat_base.mark_bar(cornerRadiusEnd=3, cursor="pointer").encode(
+                color=alt.condition(cat_selection, alt.value(ACCENT),
+                                    alt.value(GREY_LIGHT)),
+                tooltip=[alt.Tooltip("Category_Plain:N", title="Category"),
+                         alt.Tooltip("Registrations:Q", format=",")],
+            ).add_params(cat_selection)
+            cat_lbl = cat_base.mark_text(align="left", dx=4, fontSize=11,
+                                         color=GREY_DARK).encode(
+                text=alt.Text("Registrations:Q", format=","))
+
+            cat_state = st.altair_chart(
+                (cat_bars + cat_lbl).properties(height=260),
+                use_container_width=True, on_select="rerun",
+                key=f"cat_drill_select_{st.session_state.get('_cat_nonce', 0)}")
+
+            _picked = selection_values(cat_state, "cat_sel", "Category_Plain")
+            if _picked and _picked[0] in _cats_now:
+                st.session_state["_cat_drill"] = _picked[0]
+                st.rerun()
 
     # --- Chart 1c: registrations by emission norm ---------------------------
     with cen:
