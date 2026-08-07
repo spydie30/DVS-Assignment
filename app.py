@@ -183,20 +183,43 @@ def chart(df_, title=None, subtitle=None):
     return c
 
 
+# A bare "," d3 specifier makes Vega fall back to scientific notation on axis
+# ticks ("2e+2"), so thousands-grouping has to be done through a labelExpr
+# instead. Anything else (e.g. "%") is a normal Vega format string.
+_GROUP_LABEL_EXPR = "format(datum.value, ',')"
+
+
+def _num_axis(**kwargs):
+    """Axis for count-like quantitative fields: plain, thousands-grouped.
+
+    fmt=None or fmt="," -> grouped integers via labelExpr ("1,000").
+    Any other fmt (e.g. "%") is passed straight through as a Vega format.
+    """
+    fmt = kwargs.pop("fmt", None)
+    axis = dict(labelAngle=0, grid=False)
+    if fmt in (None, ","):
+        axis["labelExpr"] = _GROUP_LABEL_EXPR
+    else:
+        axis["format"] = fmt
+    return alt.Axis(**axis)
+
+
 def qx(field, title=None, fmt=None):
-    """Quantitative X axis, zero baseline enforced, horizontal labels."""
+    """Quantitative X axis, zero baseline enforced, horizontal labels.
+
+    Plain thousands-grouped numbers by default, so large counts read as
+    "1,000" instead of Vega's scientific "1e+3".
+    """
     return alt.X(field, title=title,
                  scale=alt.Scale(zero=True, nice=True),
-                 axis=alt.Axis(labelAngle=0, grid=False,
-                               format=fmt if fmt is not None else alt.Undefined))
+                 axis=_num_axis(fmt=fmt))
 
 
 def qy(field, title=None, fmt=None):
-    """Quantitative Y axis, zero baseline enforced."""
+    """Quantitative Y axis, zero baseline enforced. Same plain-number default."""
     return alt.Y(field, title=title,
                  scale=alt.Scale(zero=True, nice=True),
-                 axis=alt.Axis(labelAngle=0, grid=False,
-                               format=fmt if fmt is not None else alt.Undefined))
+                 axis=_num_axis(fmt=fmt))
 
 
 def section(title, caption=None):
@@ -587,6 +610,13 @@ with tab_macro:
         callout("Non-compliant fleet share", fmt_score(non_compliant),
                 "Older standard, over the age limit, or both", accent=False)
 
+    # Interactive-mode affordance banner, directly beneath the KPI cards.
+    st.info(
+        "\U0001F4A1 Interactive Mode Active: Click on chart bars, trendlines, "
+        "or legend items to cross-filter the dashboard. Double-click blank "
+        "space to reset."
+    )
+
     st.divider()
 
     # =========================================================================
@@ -727,10 +757,14 @@ with tab_macro:
                 y=alt.Y("Registrations:Q",
                         title="Total Registrations",
                         axis=alt.Axis(format="s")),
-                color=alt.Color("Fuel_Type:N", title="Fuel",
-                                scale=alt.Scale(domain=fuels_here,
-                                                range=colors_for(fuels_here, FUEL_COLOR)),
-                                sort=fuels_here),
+                color=alt.Color(
+                    "Fuel_Type:N",
+                    # Legend sub-caption spells out the click affordance.
+                    title=["Fuel", "Click legend item to highlight powertrain"],
+                    scale=alt.Scale(domain=fuels_here,
+                                    range=colors_for(fuels_here, FUEL_COLOR)),
+                    sort=fuels_here,
+                    legend=alt.Legend(titleFontSize=11, titleFontWeight="normal")),
                 # Conditional opacity - selected stays full, others dim
                 fillOpacity=alt.condition(fuel_selection, alt.value(0.9), alt.value(0.25)),
                 order=alt.Order("color_Fuel_Type_sort_index:Q"),
@@ -791,6 +825,13 @@ with tab_macro:
         highlighted = [f for f in
                        selection_values(volume_state, "fuel_highlight", "Fuel_Type")
                        if f in _known_fuels]
+
+        # Cross-filter state binding: persist the chart-driven powertrain
+        # selection into st.session_state so it survives reruns and is a
+        # single source of truth the share chart (below) reads from. Writing a
+        # plain session key (not a widget key) never triggers a rerun on its
+        # own, so this cannot spin an infinite loop.
+        st.session_state["tab1_fuel_highlight"] = highlighted
 
         # Drill-down click: the time-field value on the point that was hit.
         _periods = selection_values(volume_state, "drill_select", time_field)
@@ -1052,6 +1093,12 @@ with tab_macro:
 
     st.divider()
 
+    # Drill affordance sits ABOVE the two-column row (not inside the left
+    # column) so both charts start at the same height. Hidden while drilled in.
+    if not st.session_state.get("_cat_drill"):
+        st.info("\U0001F446 Click any bar in “Registrations by vehicle "
+                "category” to drill down into its vehicle sub-types.")
+
     cvc, cen = st.columns([1, 1])
 
     # --- Chart 1b: registrations by vehicle category (with drill-down) ------
@@ -1176,103 +1223,75 @@ with tab_macro:
 
     st.divider()
 
-    c1, c2 = st.columns([1, 1])
+    # --- Clean-fuel adoption hotspots (full width) -------------------------
+    #
+    # The "Net Fuel Share Shift" waterfall that used to sit beside this chart
+    # has been removed, so the hotspots ranking now spans the full width.
+    rank_dim = st.radio("Rank clean-fuel adoption by",
+                        ["State", "RTO office"], horizontal=True)
+    dim_col = "State" if rank_dim == "State" else "RTO_Office"
+    ranked = index_by(df, dim_col).sort_values("CFAR", ascending=False)
 
-    # --- Chart 2: CFAR ranking by state (or RTO office) --------------------
-    with c1:
-        rank_dim = st.radio("Rank clean-fuel adoption by",
-                            ["State", "RTO office"], horizontal=True)
-        dim_col = "State" if rank_dim == "State" else "RTO_Office"
-        ranked = index_by(df, dim_col).sort_values("CFAR", ascending=False)
-        if rank_dim == "RTO office":
-            ranked = ranked.head(20)
-        best = ranked.iloc[0][dim_col] if len(ranked) else None
-        ranked["Highlight"] = ranked[dim_col].eq(best)
-
-        section(f"Clean-fuel adoption hotspots by {rank_dim.lower()}",
-                "Preattentive: only the leading row carries the accent colour.")
-
-        # FEATURE 2: selection_point for picking a state/RTO
-        rank_selection = alt.selection_point(fields=[dim_col], name="rank_sel")
-
-        rank_base = chart(ranked).encode(
-            x=qx("CFAR:Q", "CFAR (% clean fuel)"),
-            y=alt.Y(f"{dim_col}:N", sort="-x", title=None,
-                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
-        )
-        # FEATURE 4: highlight on click OR highlight best by default
-        bars = rank_base.mark_bar(cornerRadiusEnd=3).encode(
-            fillOpacity=alt.condition(rank_selection, alt.value(1.0), alt.value(0.4)),
-            color=alt.condition(alt.datum.Highlight,
-                                alt.value(ACCENT), alt.value(GREY_LIGHT)),
-            tooltip=[alt.Tooltip(f"{dim_col}:N"),
-                     alt.Tooltip("CFAR:Q", title="CFAR %", format=".1f"),
-                     alt.Tooltip("FMI:Q", title="FMI %", format=".1f"),
-                     alt.Tooltip("Registrations:Q", format=",")],
-        ).add_params(rank_selection)
-        lbl = rank_base.mark_text(align="left", dx=4, fontSize=11,
-                                  color=GREY_DARK).encode(
-            text=alt.Text("CFAR:Q", format=".1f"))
-
-        st.altair_chart(
-            (bars + lbl).properties(height=max(260, min(560, len(ranked) * 26))),
-            use_container_width=True)
-
-    # --- Chart 3: waterfall of net share shift -----------------------------
-    with c2:
-        yrs = sorted(df["Registration_Year"].unique())
-        section("Net fuel share shift, in basis points",
-                "A waterfall, not a donut: angles cannot be compared "
-                "quantitatively, so shifts are shown on a common baseline.")
-        if len(yrs) < 2:
-            st.info("Select at least two years to measure a share shift.")
+    if rank_dim == "State":
+        # Top-N (Pandas): keep the 8 highest-CFAR states and consolidate the
+        # remainder into a single "Others" row. CFAR/FMI for that row are
+        # recomputed from the pooled remaining records - a weighted rate, not
+        # an average of rates - so the bucket is honest about its denominator.
+        top_states = ranked.head(8)
+        rest = ranked.iloc[8:]
+        if len(rest):
+            rest_pool = df[df["State"].isin(rest["State"])]
+            others = pd.DataFrame([{
+                "State": "Others",
+                "Registrations": int(len(rest_pool)),
+                "CFAR": rest_pool["Is_Clean"].mean() * 100,
+                "FMI": rest_pool["Is_Compliant"].mean() * 100,
+            }])
+            ranked = pd.concat([top_states, others], ignore_index=True)
         else:
-            y0, y1 = int(yrs[0]), int(yrs[-1])
-            s0 = df[df["Registration_Year"] == y0]["Fuel_Type"].value_counts(normalize=True)
-            s1 = df[df["Registration_Year"] == y1]["Fuel_Type"].value_counts(normalize=True)
-            allf = ordered(set(s0.index) | set(s1.index), FUEL_ORDER)
-            shift = pd.DataFrame({
-                "Fuel": allf,
-                "Shift_bps": [(s1.get(f, 0) - s0.get(f, 0)) * 10000 for f in allf],
-            }).sort_values("Shift_bps")
-            shift["End"] = shift["Shift_bps"].cumsum()
-            shift["Start"] = shift["End"] - shift["Shift_bps"]
-            shift["Direction"] = np.where(shift["Shift_bps"] >= 0, "Gain", "Loss")
+            ranked = top_states.reset_index(drop=True)
+    else:
+        ranked = ranked.head(20)
 
-            # FEATURE 2: selection on fuel in waterfall for cross-highlight
-            wf_selection = alt.selection_point(fields=["Fuel"], name="wf_sel")
+    # Accent the true leader. "Others" is a bucket, so it is excluded from the
+    # leader test even if its pooled rate happens to top the chart.
+    _rankable = (ranked[ranked[dim_col] != "Others"]
+                 if rank_dim == "State" else ranked)
+    best = _rankable.iloc[0][dim_col] if len(_rankable) else None
+    ranked["Highlight"] = ranked[dim_col].eq(best)
 
-            wf = (
-                chart(shift)
-                .mark_bar(cornerRadius=2, size=26)
-                .encode(
-                    x=alt.X("Fuel:N", sort=list(shift["Fuel"]), title=None,
-                            axis=alt.Axis(labelAngle=0, grid=False)),
-                    y=alt.Y("Start:Q", title=f"Share shift {y0} to {y1} (bps)",
-                            scale=alt.Scale(zero=True),
-                            axis=alt.Axis(labelAngle=0, grid=False)),
-                    y2="End:Q",
-                    color=alt.Color("Direction:N", title=None,
-                                    scale=alt.Scale(domain=["Gain", "Loss"],
-                                                    range=[ACCENT, ACCENT_ALT]),
-                                    legend=alt.Legend(orient="top")),
-                    # FEATURE 4: dim unselected bars
-                    fillOpacity=alt.condition(wf_selection, alt.value(1.0), alt.value(0.35)),
-                    tooltip=[alt.Tooltip("Fuel:N"),
-                             alt.Tooltip("Shift_bps:Q", title="Shift (bps)",
-                                         format="+,.0f")],
-                ).add_params(wf_selection)
-                .properties(height=max(260, min(560, len(ranked) * 26)))
-            )
-            zero_rule = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
-                color=GREY_MID).encode(y="y:Q")
+    section(
+        f"Clean-fuel adoption hotspots by {rank_dim.lower()}",
+        ("Top 8 states by CFAR; every remaining state is consolidated into "
+         "“Others”. Preattentive: only the leading row carries the "
+         "accent colour." if rank_dim == "State"
+         else "Preattentive: only the leading row carries the accent colour."))
 
-            st.altair_chart(wf + zero_rule, use_container_width=True)
-            st.caption(
-                f"100 basis points = 1 percentage point. Gains and losses sum to "
-                f"zero because these are shares of the same total. Comparing "
-                f"{y0} with {y1} only; intermediate years are not shown."
-            )
+    # FEATURE 2: selection_point for picking a state/RTO
+    rank_selection = alt.selection_point(fields=[dim_col], name="rank_sel")
+
+    rank_base = chart(ranked).encode(
+        x=qx("CFAR:Q", "CFAR (% clean fuel)"),
+        y=alt.Y(f"{dim_col}:N", sort="-x", title=None,
+                axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+    )
+    # FEATURE 4: highlight on click OR highlight best by default
+    bars = rank_base.mark_bar(cornerRadiusEnd=3).encode(
+        fillOpacity=alt.condition(rank_selection, alt.value(1.0), alt.value(0.4)),
+        color=alt.condition(alt.datum.Highlight,
+                            alt.value(ACCENT), alt.value(GREY_LIGHT)),
+        tooltip=[alt.Tooltip(f"{dim_col}:N"),
+                 alt.Tooltip("CFAR:Q", title="CFAR %", format=".1f"),
+                 alt.Tooltip("FMI:Q", title="FMI %", format=".1f"),
+                 alt.Tooltip("Registrations:Q", format=",")],
+    ).add_params(rank_selection)
+    lbl = rank_base.mark_text(align="left", dx=4, fontSize=11,
+                              color=GREY_DARK).encode(
+        text=alt.Text("CFAR:Q", format=".1f"))
+
+    st.altair_chart(
+        (bars + lbl).properties(height=max(260, min(560, len(ranked) * 30))),
+        use_container_width=True)
 
 
 # ===========================================================================
@@ -1382,15 +1401,69 @@ with tab_oem:
                 dx=10, dy=-8, align="left", fontSize=11, color=INK,
             ).encode(text=alt.Text("Label:N"))
 
-            scatter_chart = (rule_v + rule_h + pts + labels).properties(height=470)
-            st.altair_chart(scatter_chart, use_container_width=True)
+            # Quadrant background annotations. One label per region, placed at
+            # the centre of that region and rendered faint so it reads as a
+            # backdrop the bubbles sit on top of, not as data.
+            x_lo, x_hi = float(oem["CFAR"].min()), float(oem["CFAR"].max())
+            y_lo, y_hi = float(oem["FMI"].min()), float(oem["FMI"].max())
+            quad_annot = pd.DataFrame([
+                {"x": (x_mid + x_hi) / 2, "y": (y_mid + y_hi) / 2,
+                 "label": "Green Pioneers"},          # top-right
+                {"x": (x_lo + x_mid) / 2, "y": (y_mid + y_hi) / 2,
+                 "label": "Compliance Leaders"},      # top-left
+                {"x": (x_mid + x_hi) / 2, "y": (y_lo + y_mid) / 2,
+                 "label": "Clean-Fuel Specialists"},  # bottom-right
+                {"x": (x_lo + x_mid) / 2, "y": (y_lo + y_mid) / 2,
+                 "label": "Fossil Dependent"},        # bottom-left
+            ])
+            quad_labels = (
+                alt.Chart(quad_annot)
+                .mark_text(fontSize=13, fontWeight="bold", opacity=0.22,
+                           color=INK)
+                .encode(x="x:Q", y="y:Q", text="label:N")
+            )
+
+            # Annotations and text drawn first; the bubbles (pts) go LAST so
+            # they are the topmost layer. Otherwise the text-label layer sits
+            # over the circles and swallows clicks on labelled bubbles (Ola
+            # Electric, Ather, ...), which is why click-to-filter felt dead.
+            scatter_chart = (
+                quad_labels + rule_v + rule_h + labels + pts
+            ).properties(height=470)
+
+            # FEATURE 2 linkage: capture the click and expose the chosen OEM to
+            # the Fuel-Mix chart below via st.session_state. Layered selections
+            # do return to Python here (same mechanism the Tab 1 volume chart
+            # relies on), so the bubble click can slice the stacked bar.
+            scatter_state = st.altair_chart(
+                scatter_chart, use_container_width=True,
+                on_select="rerun", key="oem_scatter_select")
+
+            # Full current selection, not just the first bubble. A plain click
+            # selects one; shift-click toggles more in or out (Vega's default),
+            # so this list grows/shrinks and the Fuel-Mix multiselect below is
+            # synced to exactly match it.
+            _clicked_oem = [b for b in
+                            selection_values(scatter_state, "oem_sel", "Brand")
+                            if b in set(oem["Brand"])]
+            if _clicked_oem:
+                st.session_state["selected_oem"] = _clicked_oem[0]
+                # Key on the whole set so a shift-click (which changes the set)
+                # triggers a resync, while an unchanged selection does not loop.
+                _sel_key = tuple(sorted(_clicked_oem))
+                if st.session_state.get("_oem_click_last") != _sel_key:
+                    st.session_state["_oem_click_last"] = _sel_key
+                    st.session_state["_oem_mix_pending"] = list(_clicked_oem)
+                    st.rerun()
 
             st.caption(
                 "Green pioneers lead on both axes. Compliance leaders run a "
                 "modern, young fleet but still sell fossil powertrains. "
                 "Clean-fuel specialists sell clean fuel yet carry older or "
                 "ageing stock across the rest of their range. "
-                "\U0001F50E Scroll to zoom, drag to pan. Click a bubble to highlight."
+                "\U0001F50E Scroll to zoom, drag to pan. Click a bubble to "
+                "isolate that manufacturer in the fuel-mix chart below; "
+                "shift-click more bubbles to compare several at once."
                 + (" All manufacturers are labelled."
                    if label_all else
                    f" Only the {max_lab} largest manufacturers are labelled; "
@@ -1399,15 +1472,36 @@ with tab_oem:
         st.divider()
 
         # --- Chart 2: fuel mix per brand (100% stacked horizontal) ---------
-        n_brands = len(oem)
-        if n_brands <= 5:
-            n_show = n_brands
-            st.caption(f"Showing all {n_brands} manufacturer"
-                       f"{'s' if n_brands != 1 else ''} in the current selection.")
-        else:
-            n_show = st.slider("Manufacturers to compare (by volume)",
-                               5, int(min(30, n_brands)), int(min(15, n_brands)))
-        keep = oem.nlargest(n_show, "Registrations")["Brand"].tolist()
+        # Apply any pending OEM pushed here by a scatter-bubble click before
+        # the multiselect widget is instantiated (Streamlit refuses writes to
+        # an already-built widget key, so the injection has to happen first).
+        _pending_mix = st.session_state.pop("_oem_mix_pending", None)
+        if _pending_mix is not None:
+            st.session_state["oem_mix_pick"] = _pending_mix
+
+        oem_list = oem.sort_values("Registrations",
+                                   ascending=False)["Brand"].tolist()
+        top_10_oems = oem_list[:10]
+
+        # A filter change can leave a stale brand in the stored selection that
+        # is no longer an option; strip those out or the widget raises.
+        _valid = set(oem_list)
+        if "oem_mix_pick" in st.session_state:
+            st.session_state["oem_mix_pick"] = [
+                b for b in st.session_state["oem_mix_pick"] if b in _valid]
+
+        # Replaces the old numeric slider: pick OEMs explicitly, default to the
+        # ten largest. Bubble clicks on the scatter above append to this set.
+        # `default` is passed only on first creation; once the widget's value
+        # is in session_state (or was injected by a click), passing default too
+        # would make Streamlit warn that it is being ignored.
+        _ms_kwargs = {"key": "oem_mix_pick"}
+        if "oem_mix_pick" not in st.session_state:
+            _ms_kwargs["default"] = top_10_oems
+        selected_oems = st.multiselect(
+            "Select OEMs to compare:", options=oem_list, **_ms_kwargs)
+        keep = selected_oems if selected_oems else top_10_oems
+        n_show = len(keep)
         mix = (df[df["Manufacturer_Brand"].isin(keep)]
                .groupby(["Manufacturer_Brand", "Fuel_Type"])
                .size().reset_index(name="Registrations"))
@@ -1463,9 +1557,49 @@ with tab_oem:
         else:
             split = st.radio("Break down by", ["Vehicle sub-type", "Fuel type"],
                              horizontal=True)
+
+            # Per-group five-number summary, so the quantitative detail lives
+            # in the tooltip instead of cluttering the axis. Returns Q1, median,
+            # Q3, whisker bounds, outlier count and n for each category.
+            def _box_stats(frame, group):
+                grp = frame.groupby(group)["Engine_CC"]
+                s = pd.DataFrame({
+                    "Q1": grp.quantile(0.25), "Median": grp.median(),
+                    "Q3": grp.quantile(0.75), "Count": grp.size(),
+                }).reset_index()
+                iqr = s["Q3"] - s["Q1"]
+                s["Lower"] = s["Q1"] - 1.5 * iqr
+                s["Upper"] = s["Q3"] + 1.5 * iqr
+                outs = []
+                for _, r in s.iterrows():
+                    vals = frame.loc[frame[group] == r[group], "Engine_CC"]
+                    outs.append(int(((vals < r["Lower"]) |
+                                     (vals > r["Upper"])).sum()))
+                s["Outliers"] = outs
+                return s
+
             if split == "Vehicle sub-type":
+                # Sub-type aggregation pipeline: fold every sub-type below 2%
+                # registration share into "Other Sub-types", and cap the
+                # explicit rows so the vertical category list stays under 8.
+                cc = cc.copy()
+                _share = cc["Vehicle_Sub_Type"].value_counts(normalize=True)
+                _keep_subs = list(_share[_share >= 0.02].nlargest(7).index)
+                cc["Vehicle_Sub_Type"] = np.where(
+                    cc["Vehicle_Sub_Type"].isin(_keep_subs),
+                    cc["Vehicle_Sub_Type"], "Other Sub-types")
+
                 order = (cc.groupby("Vehicle_Sub_Type")["Engine_CC"].median()
                            .sort_values().index.tolist())
+                stats = _box_stats(cc, "Vehicle_Sub_Type")
+                box_tt = [
+                    alt.Tooltip("Vehicle_Sub_Type:N", title="Sub-type"),
+                    alt.Tooltip("Q1:Q", title="Q1 (cc)", format=",.0f"),
+                    alt.Tooltip("Median:Q", title="Median (cc)", format=",.0f"),
+                    alt.Tooltip("Q3:Q", title="Q3 (cc)", format=",.0f"),
+                    alt.Tooltip("Outliers:Q", title="Outliers"),
+                    alt.Tooltip("Count:Q", title="Vehicles", format=","),
+                ]
                 box = (
                     chart(cc)
                     .mark_boxplot(extent=1.5, size=18,
@@ -1476,10 +1610,27 @@ with tab_oem:
                                 axis=alt.Axis(labelAngle=0, grid=False, labelLimit=220)),
                         x=qx("Engine_CC:Q", "Engine displacement (cc)"),
                         color=alt.value(GREY_LIGHT),
-                    ).properties(height=max(320, cc["Vehicle_Sub_Type"].nunique() * 26))
+                    ).properties(height=max(320, cc["Vehicle_Sub_Type"].nunique() * 30))
                 )
+                # Transparent IQR-spanning bars give the whole box a hover
+                # target carrying the quartile detail.
+                box_hover = (
+                    alt.Chart(stats).mark_bar(opacity=0).encode(
+                        y=alt.Y("Vehicle_Sub_Type:N", sort=order),
+                        x="Q1:Q", x2="Q3:Q", tooltip=box_tt)
+                )
+                box = box + box_hover
             else:
                 fuels_cc = ordered(cc["Fuel_Type"], FUEL_ORDER)
+                stats = _box_stats(cc, "Fuel_Type")
+                box_tt = [
+                    alt.Tooltip("Fuel_Type:N", title="Fuel"),
+                    alt.Tooltip("Q1:Q", title="Q1 (cc)", format=",.0f"),
+                    alt.Tooltip("Median:Q", title="Median (cc)", format=",.0f"),
+                    alt.Tooltip("Q3:Q", title="Q3 (cc)", format=",.0f"),
+                    alt.Tooltip("Outliers:Q", title="Outliers"),
+                    alt.Tooltip("Count:Q", title="Vehicles", format=","),
+                ]
                 box = (
                     chart(cc)
                     .mark_boxplot(extent=1.5, size=30,
@@ -1494,6 +1645,12 @@ with tab_oem:
                                                         range=colors_for(fuels_cc, FUEL_COLOR))),
                     ).properties(height=340)
                 )
+                box_hover = (
+                    alt.Chart(stats).mark_bar(opacity=0).encode(
+                        x=alt.X("Fuel_Type:N", sort=fuels_cc),
+                        y="Q1:Q", y2="Q3:Q", tooltip=box_tt)
+                )
+                box = box + box_hover
             # FEATURE 1: .interactive() for zoom/pan on boxplot distribution
             st.altair_chart(box.interactive(), use_container_width=True)
 
@@ -1543,73 +1700,68 @@ with tab_audit:
         if risk.empty:
             st.success("Every vehicle in the current selection is compliant.")
         else:
-            section(
-                "Why vehicles fail the compliance test",
-                "The two conditions fail independently, so a modern "
-                "zero-emission vehicle can still age out.",
-            )
-            reasons = (
-                risk.groupby("Fail_Reason")
-                .size()
-                .reset_index(name="Vehicles")
-                .sort_values("Vehicles", ascending=False)
-            )
-            reasons["Share"] = reasons["Vehicles"] / reasons["Vehicles"].sum()
+            # ===== Middle row: failure reasons | age-vs-standard heatmap =====
+            col1, col2 = st.columns([1, 1.2])
 
-            # FEATURE 2: selection on fail reason for cross-highlight
-            reason_selection = alt.selection_point(fields=["Fail_Reason"], name="reason_sel")
+            with col1:
+                section(
+                    "Why vehicles fail the compliance test",
+                    "The two conditions fail independently, so a modern "
+                    "zero-emission vehicle can still age out.",
+                )
+                reasons = (
+                    risk.groupby("Fail_Reason")
+                    .size()
+                    .reset_index(name="Vehicles")
+                    .sort_values("Vehicles", ascending=False)
+                )
+                reasons["Share"] = reasons["Vehicles"] / reasons["Vehicles"].sum()
 
-            rbase = chart(reasons).encode(
-                x=qx("Vehicles:Q", "Vehicles"),
-                y=alt.Y(
-                    "Fail_Reason:N",
-                    sort="-x",
-                    title=None,
-                    axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320),
-                ),
-            )
+                # FEATURE 2: selection on fail reason for cross-highlight
+                reason_selection = alt.selection_point(fields=["Fail_Reason"],
+                                                        name="reason_sel")
 
-            AGE_FAIL_COLOR = "#4A5568"
-            rb = rbase.mark_bar(cornerRadiusEnd=3).encode(
-                color=alt.condition(
-                    alt.datum.Fail_Reason
-                    == f"Over {MAX_COMPLIANT_AGE}-year age limit",
-                    alt.value(AGE_FAIL_COLOR),
-                    alt.value(GREY_LIGHT),
-                ),
-                # FEATURE 4: dim unselected bars
-                fillOpacity=alt.condition(reason_selection, alt.value(1.0), alt.value(0.3)),
-                tooltip=[
-                    alt.Tooltip("Fail_Reason:N", title="Reason"),
-                    alt.Tooltip("Vehicles:Q", format=","),
-                    alt.Tooltip("Share:Q", format=".1%"),
-                ],
-            ).add_params(reason_selection)
-            rlbl = rbase.mark_text(
-                align="left", dx=4, fontSize=11, color=GREY_DARK
-            ).encode(text=alt.Text("Vehicles:Q", format=","))
-            st.altair_chart((rb + rlbl).properties(height=180),
-                            use_container_width=True)
-
-            aged_out = int(
-                (
-                    risk["Fail_Reason"] == f"Over {MAX_COMPLIANT_AGE}-year age limit"
-                ).sum()
-            )
-            if aged_out:
-                st.caption(
-                    f"{fmt_int(aged_out)} vehicles (shown in slate grey) are on a "
-                    "modern standard and fail on age alone \u2014 they would become "
-                    "compliant under a longer age allowance."
+                rbase = chart(reasons).encode(
+                    x=qx("Vehicles:Q", "Vehicles"),
+                    y=alt.Y("Fail_Reason:N", sort="-x", title=None,
+                            axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320)),
                 )
 
+                # Single burnt-red accent for every reason bar.
+                BURNT_RED = "#C0392B"
+                rb = rbase.mark_bar(cornerRadiusEnd=3, color=BURNT_RED).encode(
+                    fillOpacity=alt.condition(reason_selection, alt.value(1.0),
+                                              alt.value(0.35)),
+                    tooltip=[alt.Tooltip("Fail_Reason:N", title="Reason"),
+                             alt.Tooltip("Vehicles:Q", format=","),
+                             alt.Tooltip("Share:Q", format=".1%")],
+                ).add_params(reason_selection)
+                # Exact percentage labels at the bar endpoints.
+                rlbl = rbase.mark_text(align="left", dx=4, fontSize=11,
+                                       color=GREY_DARK).encode(
+                    text=alt.Text("Share:Q", format=".1%"))
+                st.altair_chart((rb + rlbl).properties(height=220),
+                                use_container_width=True)
+
+                aged_out = int(
+                    (risk["Fail_Reason"]
+                     == f"Over {MAX_COMPLIANT_AGE}-year age limit").sum())
+                if aged_out:
+                    st.caption(
+                        f"{fmt_int(aged_out)} vehicles are on a modern standard "
+                        "and fail on age alone \u2014 they would become compliant "
+                        "under a longer age allowance.")
+
+            with col2:
                 section(
                     "Ageing non-compliant fleet: age against emission standard",
-                    "Darker cells hold more vehicles. Older cohorts on the "
-                    "oldest standards carry the greatest scrappage exposure.",
+                    "Warmer, more saturated cells hold more vehicles. Older "
+                    "cohorts on the oldest standards carry the greatest "
+                    "scrappage exposure.",
                 )
                 grid = (
-                    risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean", "Norm_Label"])
+                    risk.groupby(["Vehicle_Age_Years", "Emission_Norm_Clean",
+                                  "Norm_Label"])
                     .size()
                     .reset_index(name="Vehicles")
                 )
@@ -1619,127 +1771,145 @@ with tab_audit:
                 hm_brush = alt.selection_interval(name="hm_brush")
 
                 hm_base = chart(grid).encode(
-                    x=alt.X(
-                        "Emission_Norm_Clean:N",
-                        sort=norms_here,
-                        title="Emission standard",
-                        axis=alt.Axis(labelAngle=0, grid=False),
-                    ),
-                    y=alt.Y(
-                        "Vehicle_Age_Years:O",
-                        title="Vehicle age (years)",
-                        axis=alt.Axis(labelAngle=0, grid=False),
-                    ),
+                    x=alt.X("Emission_Norm_Clean:N", sort=norms_here,
+                            title="Emission standard",
+                            axis=alt.Axis(labelAngle=0, grid=False)),
+                    y=alt.Y("Vehicle_Age_Years:O", title="Vehicle age (years)",
+                            axis=alt.Axis(labelAngle=0, grid=False)),
                 )
                 hm = hm_base.mark_rect().encode(
-                    color=alt.Color(
-                        "Vehicles:Q",
-                        title="Vehicles",
-                        scale=alt.Scale(scheme="purples"),
-                    ),
+                    # Warm warning palette, so the risk heatmap never competes
+                    # with the Electric = hero-blue colour contract.
+                    color=alt.Color("Vehicles:Q", title="Vehicles",
+                                    scale=alt.Scale(scheme="oranges")),
                     # FEATURE 4: dim unselected cells when brush is active
-                    fillOpacity=alt.condition(hm_brush, alt.value(1.0), alt.value(0.3)),
+                    fillOpacity=alt.condition(hm_brush, alt.value(1.0),
+                                              alt.value(0.3)),
                     tooltip=[
                         alt.Tooltip("Vehicle_Age_Years:O", title="Age (yrs)"),
                         alt.Tooltip("Norm_Label:N", title="Standard"),
                         alt.Tooltip("Vehicles:Q", format=","),
                     ],
                 ).add_params(hm_brush)
-                cutoff = grid["Vehicles"].max() * 0.6
+                # Smart text contrast: white on high-saturation (>60% of the
+                # peak) cells, dark charcoal on the lighter ones.
+                sat_cutoff = grid["Vehicles"].max() * 0.6
                 txt = hm_base.mark_text(fontSize=11).encode(
                     text=alt.Text("Vehicles:Q", format=","),
-                    color=alt.condition(
-                        alt.datum.Vehicles > cutoff, alt.value("white"), alt.value(INK)
-                    ),
+                    color=alt.condition(alt.datum.Vehicles > sat_cutoff,
+                                        alt.value("white"),
+                                        alt.value("#1E1E1E")),
                 )
                 st.altair_chart((hm + txt).properties(height=320),
                                 use_container_width=True)
 
-                section("Risk fleet by RTO office")
-                by_rto = (
-                    risk.groupby("RTO_Office")
-                    .agg(
-                        Non_compliant=("Registration_Number", "size"),
-                        Mean_age=("Vehicle_Age_Years", "mean"),
-                    )
-                    .reset_index()
-                    .sort_values("Non_compliant", ascending=False)
-                )
-                by_rto["Mean_age"] = by_rto["Mean_age"].round(1)
-                top_rto = by_rto.head(20).copy()
-                top_rto["Highlight"] = top_rto["RTO_Office"].eq(
-                    top_rto.iloc[0]["RTO_Office"]
-                )
+            # ===== Lower row: RTO risk, custom Top-N (optional "Other") ======
+            section(
+                "Risk fleet by RTO office",
+                "Offices ranked by their count of non-compliant vehicles.")
+            by_rto = (
+                risk.groupby("RTO_Office")
+                .agg(Non_compliant=("Registration_Number", "size"),
+                     Mean_age=("Vehicle_Age_Years", "mean"))
+                .reset_index()
+                .sort_values("Non_compliant", ascending=False)
+            )
+            n_offices = len(by_rto)
+            _median_pc = int(by_rto["Non_compliant"].median()) if n_offices else 0
 
-                # FEATURE 2: selection on RTO in risk chart
-                rto_risk_sel = alt.selection_point(fields=["RTO_Office"], name="rto_risk_sel")
+            ctrl1, ctrl2 = st.columns([1, 2])
+            with ctrl1:
+                # Custom Top-N picker.
+                _num_opts = [n for n in (5, 10, 15, 20, 25) if n < n_offices]
+                topn_opts = _num_opts + [f"All ({n_offices})"]
+                topn_choice = st.selectbox(
+                    "Show top N high-risk offices", topn_opts,
+                    index=min(1, len(topn_opts) - 1), key="rto_topn")
+            with ctrl2:
+                # "Other" bucket is off by default: because the risk is spread
+                # thinly across ~all offices, summing the long tail into one row
+                # produces a bar that dwarfs every individual office and reads
+                # as if the data were wrong. It is not - it is just a sum of
+                # many small offices.
+                group_rest = st.checkbox(
+                    "Group remaining offices into \u201COther RTO Jurisdictions\u201D",
+                    value=False,
+                    help="Off by default. When on, every office beyond the top "
+                         "N is summed into a single row.")
 
-                rbar = (
-                    chart(top_rto)
-                    .mark_bar(cornerRadiusEnd=3)
-                    .encode(
-                        x=qx("Non_compliant:Q", "Non-compliant vehicles"),
-                        y=alt.Y(
-                            "RTO_Office:N",
-                            sort="-x",
-                            title=None,
-                            axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260),
-                        ),
-                        color=alt.condition(
-                            alt.datum.Highlight, alt.value(INK), alt.value(GREY_LIGHT)
-                        ),
-                        # FEATURE 4: dim unselected RTO bars
-                        fillOpacity=alt.condition(rto_risk_sel, alt.value(1.0), alt.value(0.3)),
-                        tooltip=[
-                            alt.Tooltip("RTO_Office:N", title="RTO office"),
-                            alt.Tooltip("Non_compliant:Q", format=","),
-                            alt.Tooltip(
-                                "Mean_age:Q", title="Mean age (yrs)", format=".1f"
-                            ),
-                        ],
-                    )
-                    .add_params(rto_risk_sel)
-                    .properties(height=max(280, len(top_rto) * 26))
-                )
-                st.altair_chart(rbar, use_container_width=True)
+            top_n = (n_offices if isinstance(topn_choice, str)
+                     else int(topn_choice))
+            top_rto = by_rto.head(top_n).copy()
+            rest_rto = by_rto.iloc[top_n:]
+            if group_rest and len(rest_rto):
+                rest_pool = risk[risk["RTO_Office"].isin(rest_rto["RTO_Office"])]
+                other_row = pd.DataFrame([{
+                    "RTO_Office": "Other RTO Jurisdictions",
+                    "Non_compliant": int(len(rest_pool)),
+                    "Mean_age": rest_pool["Vehicle_Age_Years"].mean(),
+                }])
+                top_rto = pd.concat([top_rto, other_row], ignore_index=True)
+            top_rto["Mean_age"] = top_rto["Mean_age"].round(1)
 
-                rto_pick = st.multiselect(
-                    "Filter the risk table by RTO office",
-                    sorted(risk["RTO_Office"].unique()),
-                    default=[],
-                )
-                st.caption(
-                    "\u26A0\uFE0F **Note:** 18.2% of records contain RTO-State contradictions; "
-                    "filters operate strictly on RTO jurisdiction."
-                )
+            # Accent the true leader; the "Other" bucket is never the leader.
+            _lead = top_rto[top_rto["RTO_Office"] != "Other RTO Jurisdictions"]
+            _lead_office = _lead.iloc[0]["RTO_Office"] if len(_lead) else None
+            top_rto["Highlight"] = top_rto["RTO_Office"].eq(_lead_office)
 
-                risk_view = risk[risk["RTO_Office"].isin(rto_pick)] if rto_pick else risk
-                risk_cols = [
-                    "Registration_Number",
-                    "Registration_Date",
-                    "State",
-                    "RTO_Office",
-                    "Vehicle_Category",
-                    "Vehicle_Sub_Type",
-                    "Manufacturer_Brand",
-                    "Fuel_Type",
-                    "Norm_Label",
-                    "Vehicle_Age_Years",
-                    "Fail_Reason",
-                    "Engine_CC",
-                ]
-                st.dataframe(
-                    risk_view[risk_cols].sort_values("Vehicle_Age_Years", ascending=False),
-                    use_container_width=True,
-                    height=340,
-                    hide_index=True,
+            # FEATURE 2: selection on RTO in risk chart
+            rto_risk_sel = alt.selection_point(fields=["RTO_Office"],
+                                               name="rto_risk_sel")
+            rbar = (
+                chart(top_rto)
+                .mark_bar(cornerRadiusEnd=3)
+                .encode(
+                    x=qx("Non_compliant:Q", "Non-compliant vehicles"),
+                    y=alt.Y("RTO_Office:N", sort="-x", title=None,
+                            axis=alt.Axis(labelAngle=0, grid=False, labelLimit=260)),
+                    color=alt.condition(alt.datum.Highlight, alt.value(INK),
+                                        alt.value(GREY_LIGHT)),
+                    # FEATURE 4: dim unselected RTO bars
+                    fillOpacity=alt.condition(rto_risk_sel, alt.value(1.0),
+                                              alt.value(0.3)),
+                    tooltip=[
+                        alt.Tooltip("RTO_Office:N", title="RTO office"),
+                        alt.Tooltip("Non_compliant:Q", format=","),
+                        alt.Tooltip("Mean_age:Q", title="Mean age (yrs)",
+                                    format=".1f"),
+                    ],
                 )
-                st.download_button(
-                    "Download risk fleet as CSV",
-                    data=risk_view[risk_cols].to_csv(index=False).encode("utf-8"),
-                    file_name="non_compliant_risk_fleet.csv",
-                    mime="text/csv",
-                )
+                .add_params(rto_risk_sel)
+                .properties(height=max(280, len(top_rto) * 30))
+            )
+            st.altair_chart(rbar, use_container_width=True)
+            st.caption(
+                f"{n_offices} offices have at least one non-compliant vehicle "
+                f"and the count is spread thinly (median {_median_pc} per "
+                "office), so no single office stands out. That is also why the "
+                "optional “Other RTO Jurisdictions” bar looks so large when "
+                "enabled - it sums the whole long tail of small offices, not a "
+                "single hotspot.")
+
+            # ===== Bottom row: granular data grid + CSV export ===============
+            rto_pick = st.multiselect(
+                "Filter the risk table by RTO office",
+                sorted(risk["RTO_Office"].unique()), default=[])
+            risk_view = (risk[risk["RTO_Office"].isin(rto_pick)]
+                         if rto_pick else risk)
+            risk_cols = [
+                "Registration_Number", "Registration_Date", "State",
+                "RTO_Office", "Vehicle_Category", "Vehicle_Sub_Type",
+                "Manufacturer_Brand", "Fuel_Type", "Norm_Label",
+                "Vehicle_Age_Years", "Fail_Reason", "Engine_CC",
+            ]
+            st.dataframe(
+                risk_view[risk_cols].sort_values("Vehicle_Age_Years",
+                                                 ascending=False),
+                use_container_width=True, height=340, hide_index=True)
+            st.download_button(
+                "Download risk fleet as CSV",
+                data=risk_view[risk_cols].to_csv(index=False).encode("utf-8"),
+                file_name="non_compliant_risk_fleet.csv", mime="text/csv")
 
     # ---------------- Section B: data governance ---------------------------
     with sec_b:
