@@ -1602,14 +1602,18 @@ with tab_oem:
                 ]
                 box = (
                     chart(cc)
+                    # GREY_MID (not GREY_LIGHT): a mid-tone box reads clearly on
+                    # both the dark and the light theme. GREY_LIGHT was so faint
+                    # it blended into the dark background. White median line
+                    # keeps the centre mark legible against the mid-grey box.
                     .mark_boxplot(extent=1.5, size=18,
-                                  median={"color": INK},
+                                  median={"color": "white", "strokeWidth": 2},
                                   outliers={"color": ACCENT_ALT, "size": 14})
                     .encode(
                         y=alt.Y("Vehicle_Sub_Type:N", sort=order, title=None,
                                 axis=alt.Axis(labelAngle=0, grid=False, labelLimit=220)),
                         x=qx("Engine_CC:Q", "Engine displacement (cc)"),
-                        color=alt.value(GREY_LIGHT),
+                        color=alt.value(GREY_MID),
                     ).properties(height=max(320, cc["Vehicle_Sub_Type"].nunique() * 30))
                 )
                 # Transparent IQR-spanning bars give the whole box a hover
@@ -1633,8 +1637,16 @@ with tab_oem:
                 ]
                 box = (
                     chart(cc)
+                    # White median reads on every fuel colour. The whisker
+                    # (rule) and caps (ticks) must be coloured EXPLICITLY: with
+                    # a field-based colour encoding Vega does NOT propagate the
+                    # colour to them, so they default to black and vanish on a
+                    # dark background. GREY_MID keeps them visible on both
+                    # themes without clashing with the fuel hues.
                     .mark_boxplot(extent=1.5, size=30,
-                                  median={"color": INK},
+                                  median={"color": "white", "strokeWidth": 2},
+                                  rule={"color": GREY_MID, "size": 1.5},
+                                  ticks={"color": GREY_MID, "size": 10},
                                   outliers={"color": ACCENT_ALT, "size": 14})
                     .encode(
                         x=alt.X("Fuel_Type:N", sort=fuels_cc, title=None,
@@ -1651,8 +1663,12 @@ with tab_oem:
                         y="Q1:Q", y2="Q3:Q", tooltip=box_tt)
                 )
                 box = box + box_hover
-            # FEATURE 1: .interactive() for zoom/pan on boxplot distribution
-            st.altair_chart(box.interactive(), use_container_width=True)
+            # NOTE: no .interactive() here. Binding a zoom/pan interval to a
+            # LAYERED chart whose base is a composite boxplot makes Vega emit
+            # two selection signals with the same auto-generated name
+            # ("Duplicate signal name"), which blanks the whole chart. Static
+            # render keeps the box plot and its hover tooltips working.
+            st.altair_chart(box, use_container_width=True)
 
 
 # ===========================================================================
