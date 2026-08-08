@@ -1300,45 +1300,77 @@ with tab_macro:
     #
     # The "Net Fuel Share Shift" waterfall that used to sit beside this chart
     # has been removed, so the hotspots ranking now spans the full width.
-    rank_dim = st.radio("Rank clean-fuel adoption by",
-                        ["State", "RTO office"], horizontal=True)
+    # The three controls stack vertically inside one narrow column, so they
+    # read as a single top-to-bottom control group and the dropdown does not
+    # stretch across the full page width.
+    ctrl_col, _ = st.columns([1, 2])
+
+    with ctrl_col:
+        rank_dim = st.radio("Rank clean-fuel adoption by",
+                            ["State", "RTO office"], horizontal=True)
     dim_col = "State" if rank_dim == "State" else "RTO_Office"
     ranked = index_by(df, dim_col).sort_values("CFAR", ascending=False)
 
-    if rank_dim == "State":
-        # Top-N (Pandas): keep the 8 highest-CFAR states and consolidate the
-        # remainder into a single "Others" row. CFAR/FMI for that row are
-        # recomputed from the pooled remaining records - a weighted rate, not
-        # an average of rates - so the bucket is honest about its denominator.
-        top_states = ranked.head(8)
-        rest = ranked.iloc[8:]
-        if len(rest):
-            rest_pool = df[df["State"].isin(rest["State"])]
-            others = pd.DataFrame([{
-                "State": "Others",
-                "Registrations": int(len(rest_pool)),
-                "CFAR": rest_pool["Is_Clean"].mean() * 100,
-                "FMI": rest_pool["Is_Compliant"].mean() * 100,
-            }])
-            ranked = pd.concat([top_states, others], ignore_index=True)
-        else:
-            ranked = top_states.reset_index(drop=True)
+    # Custom Top-N picker. Options are capped to what the current selection
+    # actually contains, and the widget key is per-dimension so switching
+    # between State and RTO office cannot carry a stale value into a list that
+    # no longer offers it.
+    n_entities = len(ranked)
+    _default_n = 8 if rank_dim == "State" else 20
+    _num_opts = [n for n in (5, 8, 10, 15, 20, 25, 30) if n < n_entities]
+    topn_opts = _num_opts + [f"All ({n_entities})"]
+    _idx = (topn_opts.index(_default_n) if _default_n in topn_opts
+            else len(topn_opts) - 1)
+    with ctrl_col:
+        topn_choice = st.selectbox(
+            f"Show top N {'states' if rank_dim == 'State' else 'RTO offices'}",
+            topn_opts, index=_idx, key=f"hot_topn_{dim_col}")
+
+        # Pooling the tail is genuinely useful for the ~13 states, but with 60
+        # RTO offices it produces a single bar that dwarfs every individual
+        # office (the same trap fixed on Tab 3), so it defaults off there.
+        group_rest = st.checkbox(
+            "Group the rest into “Others”", value=(rank_dim == "State"),
+            key=f"hot_other_{dim_col}",
+            help="Pools every entity beyond the top N into one row, using a "
+                 "true weighted rate over the pooled records.")
+
+    top_n = n_entities if isinstance(topn_choice, str) else int(topn_choice)
+
+    # Top-N (Pandas): keep the N highest-CFAR rows and optionally consolidate
+    # the remainder into a single "Others" row. CFAR/FMI for that row are
+    # recomputed from the pooled remaining records - a weighted rate, not an
+    # average of rates - so the bucket is honest about its denominator.
+    top_rows = ranked.head(top_n)
+    rest = ranked.iloc[top_n:]
+    if group_rest and len(rest):
+        rest_pool = df[df[dim_col].isin(rest[dim_col])]
+        others = pd.DataFrame([{
+            dim_col: "Others",
+            "Registrations": int(len(rest_pool)),
+            "CFAR": rest_pool["Is_Clean"].mean() * 100,
+            "FMI": rest_pool["Is_Compliant"].mean() * 100,
+        }])
+        ranked = pd.concat([top_rows, others], ignore_index=True)
     else:
-        ranked = ranked.head(20)
+        ranked = top_rows.reset_index(drop=True)
 
     # Accent the true leader. "Others" is a bucket, so it is excluded from the
     # leader test even if its pooled rate happens to top the chart.
-    _rankable = (ranked[ranked[dim_col] != "Others"]
-                 if rank_dim == "State" else ranked)
+    _rankable = ranked[ranked[dim_col] != "Others"]
     best = _rankable.iloc[0][dim_col] if len(_rankable) else None
     ranked["Highlight"] = ranked[dim_col].eq(best)
 
+    _noun = "states" if rank_dim == "State" else "RTO offices"
+    _scope = (f"All {n_entities} {_noun} by CFAR" if top_n >= n_entities
+              else f"Top {top_n} {_noun} by CFAR")
+    _pooled = (f"; the remaining {n_entities - top_n} consolidated into "
+               "“Others”"
+               if group_rest and top_n < n_entities else "")
     section(
         f"Clean-fuel adoption hotspots by {rank_dim.lower()}",
-        ("Top 8 states by CFAR; every remaining state is consolidated into "
-         "“Others”. Preattentive: only the leading row carries the "
-         "accent colour." if rank_dim == "State"
-         else "Preattentive: only the leading row carries the accent colour."))
+        f"{_scope}{_pooled}. Preattentive: only the leading row carries the "
+        "accent colour.")
 
     # FEATURE 2: selection_point for picking a state/RTO
     rank_selection = alt.selection_point(fields=[dim_col], name="rank_sel")
@@ -1382,9 +1414,11 @@ with tab_macro:
                                      format=".1f")])
     )
 
+    # Row height is fixed rather than the plot height, so picking a large N
+    # grows the chart instead of squashing every bar into an unreadable band.
     st.altair_chart(
         (bars + lbl + nat_rule)
-        .properties(height=max(260, min(560, len(ranked) * 30))),
+        .properties(height=max(260, min(1400, len(ranked) * 28))),
         use_container_width=True)
     # Caption is colour-matched to the rule itself, so the sentence and the
     # line it describes are bound by similarity rather than by proximity alone.
@@ -2171,8 +2205,24 @@ with tab_audit:
         rto_err["Error_rate"] = rto_err["Defects"] / rto_err["Records"] * 100
         rto_err = rto_err[rto_err["Records"] >= 5].sort_values(
             "Error_rate", ascending=False).head(20)
+
+        # A ranking of zeros is not a ranking. When no record in the selection
+        # fails any integrity check, every bar would be zero-length and the
+        # chart renders as an empty axis with a column of office names - which
+        # reads as a broken chart rather than as the good news it actually is.
+        # Report the finding in words instead and skip the plot entirely.
+        _total_defects = int(rto_err["Defects"].sum()) if len(rto_err) else 0
+
         if rto_err.empty:
             st.info("No RTO office has enough records to rank reliably.")
+        elif _total_defects == 0:
+            st.success(
+                f"No errors to rank — every one of the "
+                f"{fmt_int(len(df))} records in this selection passes all "
+                f"{len(quality)} integrity checks, across all "
+                f"{len(rto_err)} RTO offices with enough volume to assess. "
+                "The ranking chart appears here as soon as any office records "
+                "a failing row.")
         else:
             rto_err["Highlight"] = rto_err["Error_rate"].eq(rto_err["Error_rate"].max())
 
