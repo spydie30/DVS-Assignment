@@ -76,7 +76,7 @@ st.set_page_config(
 )
 
 _HERE = Path(__file__).parent
-DATA_PATH = _HERE / "VAHAN_Dataset_Fully_Corrected_Issues.csv"
+DATA_PATH = _HERE / "VAHAN_Dataset_Cleaned_Final.csv"
 
 # ---------------------------------------------------------------------------
 # DESIGN SYSTEM
