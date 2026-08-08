@@ -102,6 +102,16 @@ CLEAN_FUELS = theme.CLEAN_FUELS
 FUEL_ORDER = theme.FUEL_ORDER
 FUEL_COLOR = theme.FUEL_COLOR
 
+# Single burnt-red reserved for exceptions: compliance failures, risk, losses.
+# Defined once so the KPI cards and the Tab 3 charts cannot drift apart.
+FAIL_RED = "#C0392B"
+
+# Reference/benchmark lines only (e.g. the national CFAR rule). A vivid magenta
+# sits outside the fuel palette entirely - no grey, blue or orange - so a
+# benchmark can never be misread as a powertrain series, and it stays loud on
+# both the light and the dark theme.
+BENCHMARK = "#F72585"
+
 
 def ordered(values, preferred):
     """Preferred vocabulary first, then anything else the data contains."""
@@ -229,15 +239,55 @@ def section(title, caption=None):
         st.caption(caption)
 
 
-def callout(label, value, note=None, accent=True):
-    """Headline number - preferred over tables for single figures.
+# KPI card styling. Injected once per run; the colours are semi-transparent
+# rgba over the theme's own background, so a single rule reads correctly on both
+# the light and the dark Streamlit theme without hardcoding a page colour.
+_KPI_CSS = """
+<style>
+.kpi-card{
+  border-left:5px solid var(--kpi-accent);
+  background:linear-gradient(90deg, var(--kpi-tint), transparent 85%);
+  border-radius:6px; padding:.65rem .9rem .7rem 1rem; height:100%;
+}
+.kpi-card .kpi-label{
+  font-size:.78rem; font-weight:600; letter-spacing:.02em;
+  text-transform:uppercase; opacity:.72; margin-bottom:.15rem;
+}
+.kpi-card .kpi-value{
+  font-size:1.85rem; font-weight:700; line-height:1.15;
+  color:var(--kpi-accent);
+}
+.kpi-card .kpi-note{ font-size:.76rem; opacity:.66; margin-top:.2rem; }
+</style>
+"""
 
-    `accent` is accepted for call-site compatibility but ignored: st.metric
-    already renders in the theme's own emphasis colour.
+
+def kpi_css():
+    st.markdown(_KPI_CSS, unsafe_allow_html=True)
+
+
+def _tint(hex_color, alpha=0.12):
+    """Semi-transparent rgba of a hex colour, for the card wash."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def callout(label, value, note=None, accent=True, color=None):
+    """Accented KPI card - preferred over tables for single figures.
+
+    `color` sets the accent (border + value colour). `accent=False` falls back
+    to a neutral grey accent so secondary/context metrics recede, which keeps
+    the preattentive hierarchy: only the story metrics carry a hue.
     """
-    st.metric(label, value)
-    if note:
-        st.caption(note)
+    c = color or (ACCENT if accent else GREY_DARK)
+    st.markdown(
+        f"""<div class="kpi-card" style="--kpi-accent:{c};--kpi-tint:{_tint(c)}">
+              <div class="kpi-label">{label}</div>
+              <div class="kpi-value">{value}</div>
+              {f'<div class="kpi-note">{note}</div>' if note else ''}
+            </div>""",
+        unsafe_allow_html=True)
 
 
 def fmt_int(n):
@@ -566,6 +616,8 @@ st.caption(
     f"{fmt_int(len(df_all))} registrations \u00b7 {df_all['State'].nunique()} states \u00b7 "
     f"{year_min} to {year_max}")
 
+kpi_css()   # KPI card styles, injected once per run
+
 if df.empty:
     st.warning("No data available for the selected filters. "
                "Widen your selection in the sidebar.")
@@ -594,21 +646,26 @@ with tab_macro:
         if prev:
             yoy_delta = (last - prev) / prev * 100
 
+    # Card accents follow the colour contract: volume is neutral context,
+    # CFAR carries the Electric hero blue (it is the clean-fuel story), FMI the
+    # CNG sky blue, and the non-compliant share the burnt-red exception colour.
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         callout("Total registrations", fmt_int(len(df)),
                 (f"{yoy_delta:+.1f}% vs previous year" if yoy_delta is not None
-                 else "Single year selected"))
+                 else "Single year selected"),
+                color=GREY_DARK)
     with k2:
         callout("Clean-Fuel Adoption Rate (CFAR)", fmt_score(cfar),
-                "Electric, CNG or hybrid")
+                "Electric, CNG or hybrid", color=ACCENT)
     with k3:
         callout("Fleet Modernization Index (FMI)", fmt_score(fmi),
                 f"BS6 or zero-emission, and \u2264{MAX_COMPLIANT_AGE} years old",
-                accent=False)
+                color=FUEL_COLOR.get("CNG", "#9CC3DE"))
     with k4:
         callout("Non-compliant fleet share", fmt_score(non_compliant),
-                "Older standard, over the age limit, or both", accent=False)
+                "Older standard, over the age limit, or both",
+                color=FAIL_RED)
 
     # Interactive-mode affordance banner, directly beneath the KPI cards.
     st.info(
@@ -975,6 +1032,20 @@ with tab_macro:
             )
         )
 
+        # --- Layer 1b: a bullet on every measured period ------------------
+        # One filled dot per period per powertrain. These mark exactly where a
+        # value was actually measured, so the straight segments between them
+        # read as interpolation rather than as continuous data.
+        share_bullets = (
+            alt.Chart(fuel_year)
+            .mark_point(filled=True, size=45)
+            .encode(
+                x=share_x, y=share_y, color=fuel_color,
+                opacity=alt.Opacity("Emphasis:Q", scale=None),
+                tooltip=share_tooltip,
+            )
+        )
+
         # --- Layer 2: single highlight dot at the final period -------------
         last_period = sorted(fuel_year[time_field].unique())[-1]
         endpoints = fuel_year[fuel_year[time_field] == last_period].copy()
@@ -1064,7 +1135,8 @@ with tab_macro:
             share_title = "Powertrain mix has held roughly flat this period"
 
         share_chart = (
-            alt.layer(share_lines, share_hover, share_dots, share_labels)
+            alt.layer(share_lines, share_bullets, share_hover, share_dots,
+                      share_labels)
             .properties(
                 height=SHARE_PLOT_H,
                 padding={"left": 5, "top": 5, "right": 108, "bottom": 5},
@@ -1086,7 +1158,8 @@ with tab_macro:
         st.altair_chart(share_chart, use_container_width=True)
         st.caption(
             "Same periods, same colours and the same legend selection as the "
-            "bars above, read as share of the mix instead of volume. Lines are "
+            "bars above, read as share of the mix instead of volume. Each "
+            "bullet marks a period that was actually measured. Lines are "
             "labelled at their endpoints, so there is no second legend to look "
             "up; hover any point for the exact share and count."
         )
@@ -1096,8 +1169,8 @@ with tab_macro:
     # Drill affordance sits ABOVE the two-column row (not inside the left
     # column) so both charts start at the same height. Hidden while drilled in.
     if not st.session_state.get("_cat_drill"):
-        st.info("\U0001F446 Click any bar in “Registrations by vehicle "
-                "category” to drill down into its vehicle sub-types.")
+        st.info("\U0001F447 Click any bar in “Registrations by vehicle "
+                "category” below to drill down into its vehicle sub-types.")
 
     cvc, cen = st.columns([1, 1])
 
@@ -1289,9 +1362,42 @@ with tab_macro:
                               color=GREY_DARK).encode(
         text=alt.Text("CFAR:Q", format=".1f"))
 
+    # National CFAR benchmark: the pooled rate across the whole current
+    # selection (a weighted rate, not the mean of the row rates). A single
+    # dashed rule turns each bar from an isolated number into "above or below
+    # the national line", which is the comparison the chart is really for.
+    #
+    # No in-chart text label: it collided with whichever bar happened to end
+    # near the line. The caption below names the value instead, and the rule
+    # carries its own tooltip. BENCHMARK is deliberately outside the fuel
+    # palette (no grey, blue or orange) so it cannot be mistaken for a
+    # powertrain series while still reading loudly on either theme.
+    national_cfar = df["Is_Clean"].mean() * 100
+    _nat_df = pd.DataFrame({"CFAR": [national_cfar]})
+    nat_rule = (
+        alt.Chart(_nat_df).mark_rule(color=BENCHMARK, strokeDash=[6, 4],
+                                     strokeWidth=2.5, opacity=1.0)
+        .encode(x=alt.X("CFAR:Q"),
+                tooltip=[alt.Tooltip("CFAR:Q", title="National CFAR %",
+                                     format=".1f")])
+    )
+
     st.altair_chart(
-        (bars + lbl).properties(height=max(260, min(560, len(ranked) * 30))),
+        (bars + lbl + nat_rule)
+        .properties(height=max(260, min(560, len(ranked) * 30))),
         use_container_width=True)
+    # Caption is colour-matched to the rule itself, so the sentence and the
+    # line it describes are bound by similarity rather than by proximity alone.
+    # st.caption cannot take a custom colour (Streamlit's :color[] markdown
+    # supports only a fixed palette), so this is a styled markdown block sized
+    # to match a native caption.
+    st.markdown(
+        f"<div style='font-size:0.875rem;line-height:1.4;color:{BENCHMARK};'>"
+        f"The dashed magenta line marks the national CFAR for the current "
+        f"selection (<b>{national_cfar:.1f}%</b>) &mdash; the pooled rate "
+        f"across every record, so bars read as above or below the benchmark."
+        f"</div>",
+        unsafe_allow_html=True)
 
 
 # ===========================================================================
@@ -1312,13 +1418,15 @@ with tab_oem:
         k1, k2, k3 = st.columns(3)
         with k1:
             callout("Top OEM by volume", str(top_vol["Brand"]),
-                    f"{fmt_int(top_vol['Registrations'])} registrations")
+                    f"{fmt_int(top_vol['Registrations'])} registrations",
+                    color=GREY_DARK)
         with k2:
             callout("Highest clean-fuel OEM", str(top_cfar["Brand"]),
-                    f"CFAR {top_cfar['CFAR']:.1f}%")
+                    f"CFAR {top_cfar['CFAR']:.1f}%", color=ACCENT)
         with k3:
             callout("Most compliant OEM", str(top_fmi["Brand"]),
-                    f"FMI {top_fmi['FMI']:.1f}%", accent=False)
+                    f"FMI {top_fmi['FMI']:.1f}%",
+                    color=FUEL_COLOR.get("CNG", "#9CC3DE"))
 
         st.divider()
 
@@ -1431,6 +1539,16 @@ with tab_oem:
                 quad_labels + rule_v + rule_h + labels + pts
             ).properties(height=470)
 
+            # Explicit affordance for the scatter -> fuel-mix linkage, stated
+            # before the chart so the behaviour is discovered rather than found
+            # by accident.
+            st.info(
+                "\U0001F5B1️ Click a manufacturer bubble to show **only "
+                "that manufacturer** in “Fuel mix within each manufacturer” "
+                "below. Shift-click to compare several; double-click blank "
+                "space to reset."
+            )
+
             # FEATURE 2 linkage: capture the click and expose the chosen OEM to
             # the Fuel-Mix chart below via st.session_state. Layered selections
             # do return to Python here (same mechanism the Tab 1 volume chart
@@ -1510,6 +1628,13 @@ with tab_oem:
         section("Fuel mix within each manufacturer",
                 "Shares within each bar; bars are ordered by total volume.")
 
+        # Confirm what the chart is currently scoped to, so a bubble click has
+        # a visible consequence rather than silently changing the chart.
+        if _pending_mix is not None or len(keep) == 1:
+            st.caption(
+                f"Filtered from the scatter above to **{', '.join(keep)}**. "
+                "Clear or edit the selector above to compare more.")
+
         # FEATURE 2: selection on fuel type in stacked bar for cross-highlight
         mix_fuel_sel = alt.selection_point(
             fields=["Fuel_Type"], bind="legend", name="mix_fuel_hl"
@@ -1579,15 +1704,36 @@ with tab_oem:
                 return s
 
             if split == "Vehicle sub-type":
-                # Sub-type aggregation pipeline: fold every sub-type below 2%
-                # registration share into "Other Sub-types", and cap the
-                # explicit rows so the vertical category list stays under 8.
+                # Explicit sub-type selection replaces the old "<2% into Other
+                # Sub-types" roll-up: pooling unlike sub-types into one box was
+                # statistically meaningless (a box over a mixture of scooters
+                # and trucks describes nothing). The user now picks exactly
+                # which sub-types to compare; the default is the 8 largest by
+                # volume, which keeps the axis readable.
                 cc = cc.copy()
-                _share = cc["Vehicle_Sub_Type"].value_counts(normalize=True)
-                _keep_subs = list(_share[_share >= 0.02].nlargest(7).index)
-                cc["Vehicle_Sub_Type"] = np.where(
-                    cc["Vehicle_Sub_Type"].isin(_keep_subs),
-                    cc["Vehicle_Sub_Type"], "Other Sub-types")
+                _sub_counts = cc["Vehicle_Sub_Type"].value_counts()
+                sub_options = _sub_counts.index.tolist()
+                _default_subs = sub_options[:8]
+
+                # Drop stale entries after a sidebar filter change, else the
+                # widget raises on a value that is no longer an option.
+                if "cc_sub_pick" in st.session_state:
+                    st.session_state["cc_sub_pick"] = [
+                        s for s in st.session_state["cc_sub_pick"]
+                        if s in set(sub_options)]
+                _sub_kwargs = {"key": "cc_sub_pick"}
+                if "cc_sub_pick" not in st.session_state:
+                    _sub_kwargs["default"] = _default_subs
+                picked_subs = st.multiselect(
+                    "Sub-types to compare:", options=sub_options,
+                    help="Ordered by registration volume. Leave empty to fall "
+                         "back to the 8 largest sub-types.",
+                    **_sub_kwargs)
+
+                # Options are derived from `cc` itself, so any non-empty
+                # selection is guaranteed to match rows.
+                _use_subs = picked_subs if picked_subs else _default_subs
+                cc = cc[cc["Vehicle_Sub_Type"].isin(_use_subs)]
 
                 order = (cc.groupby("Vehicle_Sub_Type")["Engine_CC"].median()
                            .sort_values().index.tolist())
@@ -1695,14 +1841,14 @@ with tab_audit:
                 "Non-compliant vehicles",
                 fmt_int(len(risk)),
                 f"{(len(risk) / len(df) * 100):.1f}% of the selection",
-                accent=False,
+                color=FAIL_RED,
             )
         with k2:
             callout(
                 "Fleet Modernization Index",
                 fmt_score(df["Is_Compliant"].mean() * 100),
                 f"Modern standard and \u2264{MAX_COMPLIANT_AGE} years old",
-                accent=True,
+                color=FUEL_COLOR.get("CNG", "#9CC3DE"),
             )
         with k3:
             med_age = risk["Vehicle_Age_Years"].median() if len(risk) else 0.0
@@ -1710,7 +1856,7 @@ with tab_audit:
                 "Median Age (Risk Fleet)",
                 f"{med_age:.1f} yrs",
                 "Robust central measure of scrappage exposure",
-                accent=False,
+                color=GREY_DARK,
             )
 
         if risk.empty:
@@ -1743,9 +1889,9 @@ with tab_audit:
                             axis=alt.Axis(labelAngle=0, grid=False, labelLimit=320)),
                 )
 
-                # Single burnt-red accent for every reason bar.
-                BURNT_RED = "#C0392B"
-                rb = rbase.mark_bar(cornerRadiusEnd=3, color=BURNT_RED).encode(
+                # Single burnt-red accent for every reason bar (module constant,
+                # shared with the non-compliance KPI card).
+                rb = rbase.mark_bar(cornerRadiusEnd=3, color=FAIL_RED).encode(
                     fillOpacity=alt.condition(reason_selection, alt.value(1.0),
                                               alt.value(0.35)),
                     tooltip=[alt.Tooltip("Fail_Reason:N", title="Reason"),
@@ -1942,14 +2088,16 @@ with tab_audit:
         k1, k2, k3 = st.columns(3)
         with k1:
             callout("Data cleanliness score", fmt_score(cleanliness),
-                    "Records passing every integrity check")
+                    "Records passing every integrity check", color=ACCENT)
         with k2:
+            # Colour carries the verdict: red only when defects actually exist.
             callout("Records with a defect", fmt_int(len(defects)),
-                    f"of {fmt_int(len(df))} in selection", accent=False)
+                    f"of {fmt_int(len(df))} in selection",
+                    color=FAIL_RED if len(defects) else GREY_DARK)
         with k3:
             failing = int((quality["Failing records"] > 0).sum())
             callout("Checks failing", f"{failing} of {len(quality)}",
-                    accent=(failing == 0))
+                    color=FAIL_RED if failing else ACCENT)
 
         section("Data hygiene drill-down",
                 "Every record failing at least one integrity check, with the "
