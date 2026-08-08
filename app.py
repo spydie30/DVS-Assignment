@@ -245,8 +245,7 @@ def section(title, caption=None):
 _KPI_CSS = """
 <style>
 .kpi-card{
-  border-left:5px solid var(--kpi-accent);
-  background:linear-gradient(90deg, var(--kpi-tint), transparent 85%);
+  background:(90deg, var(--kpi-tint), transparent 85%);
   border-radius:6px; padding:.65rem .9rem .7rem 1rem; height:100%;
 }
 .kpi-card .kpi-label{
@@ -694,8 +693,8 @@ with tab_macro:
 
     # Interactive-mode affordance banner, directly beneath the KPI cards.
     st.info(
-        "\U0001F4A1 Interactive Mode Active: Click on chart bars, trendlines, "
-        "or legend items to cross-filter the dashboard. Double-click blank "
+        "\U0001F4A1 Click on chart bars, trendlines, "
+        "or legend items to cross-filter among relevant charts. Double-click blank "
         "space to reset."
     )
 
@@ -1463,11 +1462,7 @@ with tab_macro:
     # supports only a fixed palette), so this is a styled markdown block sized
     # to match a native caption.
     st.markdown(
-        f"<div style='font-size:0.875rem;line-height:1.4;color:{BENCHMARK};'>"
-        f"The dashed magenta line marks the national CFAR for the current "
-        f"selection (<b>{national_cfar:.1f}%</b>) &mdash; the pooled rate "
-        f"across every record, so bars read as above or below the benchmark."
-        f"</div>",
+        f"<div style='font-size:0.875rem;line-height:1.4'>"f"The dashed line marks the <div style='color:{BENCHMARK};'>"f" (<b>{national_cfar:.1f}%</b>) &mdash; national CFAR  "f"</div> the pooled rate for the current selection, so bars read as above or below the benchmark.",
         unsafe_allow_html=True)
 
 
