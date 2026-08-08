@@ -607,7 +607,7 @@ st.sidebar.metric("Records in selection", fmt_int(len(df)),
                   f"of {fmt_int(len(df_all))} total")
 st.sidebar.caption(
     "CFAR = clean-fuel adoption rate. FMI = fleet modernization index "
-    f"(share on a modern standard \u2014 BS6 or zero-emission \u2014 and no more than "
+    f"(share on a modern standard — BS6 or zero-emission — and no more than "
     f"{MAX_COMPLIANT_AGE} years old)."
 )
 
@@ -615,10 +615,28 @@ st.sidebar.caption(
 # Header + empty-state handling
 # ---------------------------------------------------------------------------
 
-st.title("VAHAN RTO Registration Analytics")
+st.sidebar.markdown(
+    "<div style='border: 1px solid #cbd5e1; border-radius: 8px; "
+    "padding: 10px 12px; margin-top: 6px; background-color: rgba(255,255,255,0.03);'>"
+    f"""Made By:- Anaadi Dubey
+        Roll Number:-2025em1300322 
+        \u00b7 For DVS Assigmnent under BITS Pliani Digital \u00b7 </div>""",
+    unsafe_allow_html=True,
+)
+st.caption(
+    "<div style='border: 1px solid #cbd5e1; border-radius: 8px; "
+    "padding: 10px 12px; margin-top: 6px; background-color: rgba(255,255,255,0.03);'>"
+    f"""Made By:- Anaadi Dubey
+        Roll Number:-2025em1300322 
+        \u00b7 For DVS Assigmnent under BITS Pliani Digital \u00b7 </div>""",
+    unsafe_allow_html=True,
+)
+st.title("VAHAN RTO Registration Analytics",)
 st.caption(
     f"{fmt_int(len(df_all))} registrations \u00b7 {df_all['State'].nunique()} states \u00b7 "
     f"{year_min} to {year_max}")
+
+
 
 kpi_css()   # KPI card styles, injected once per run
 
@@ -1333,8 +1351,8 @@ with tab_macro:
     # between State and RTO office cannot carry a stale value into a list that
     # no longer offers it.
     n_entities = len(ranked)
-    _default_n = 8 if rank_dim == "State" else 20
-    _num_opts = [n for n in (5, 8, 10, 15, 20, 25, 30) if n < n_entities]
+    _default_n = 3 if rank_dim == "State" else 20
+    _num_opts = [n for n in (1,3,5, 8, 13, 25) if n < n_entities]
     topn_opts = _num_opts + [f"All ({n_entities})"]
     _idx = (topn_opts.index(_default_n) if _default_n in topn_opts
             else len(topn_opts) - 1)
@@ -1389,8 +1407,7 @@ with tab_macro:
         # is actually ranking RTO offices.
         f"Clean-Fuel Adoption Leaderboard by "
         f"{'State' if rank_dim == 'State' else 'RTO Office'}",
-        f"{_scope}{_pooled}. Preattentive: only the leading row carries the "
-        "accent colour.")
+        )
 
     # FEATURE 2: selection_point for picking a state/RTO
     rank_selection = alt.selection_point(fields=[dim_col], name="rank_sel")
@@ -2101,8 +2118,7 @@ with tab_audit:
                     color=alt.condition(alt.datum.Highlight, alt.value(INK),
                                         alt.value(GREY_LIGHT)),
                     # FEATURE 4: dim unselected RTO bars
-                    fillOpacity=alt.condition(rto_risk_sel, alt.value(1.0),
-                                              alt.value(0.3)),
+                    fillOpacity=alt.condition(rto_risk_sel, alt.value(1.0), alt.value(0.3)),
                     tooltip=[
                         alt.Tooltip("RTO_Office:N", title="RTO office"),
                         alt.Tooltip("Non_compliant:Q", format=","),
