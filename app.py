@@ -667,6 +667,9 @@ with tab_macro:
                 "Older standard, over the age limit, or both",
                 color=FAIL_RED)
 
+    # Breathing room so the banner does not crowd the KPI cards above it.
+    st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
+
     # Interactive-mode affordance banner, directly beneath the KPI cards.
     st.info(
         "\U0001F4A1 Interactive Mode Active: Click on chart bars, trendlines, "
@@ -868,12 +871,16 @@ with tab_macro:
         # same click can drive the share chart below. Streamlit resolves
         # selection parameters recursively through `layer`, so a compound
         # chart is fine here.
-        compound_chart = alt.layer(bar_chart, line_chart).properties(height=400)
+        compound_chart = alt.layer(bar_chart, line_chart).properties(
+            height=400,
+            title=alt.TitleParams(
+                text="Annual Registration Volume and Short-Term Growth Trends",
+                anchor="start", align="left", fontSize=16, color=INK))
         # One key for both parameters: the legend highlight and the drill
         # click come back in the same payload. A stable key is what lets the
         # fuel highlight survive a drill.
         volume_state = st.altair_chart(
-            compound_chart, use_container_width=True,
+            compound_chart, width="stretch",
             on_select="rerun", key="volume_chart_select")
 
         # Read the selections back out. See `selection_values` for the
@@ -1141,21 +1148,27 @@ with tab_macro:
                 height=SHARE_PLOT_H,
                 padding={"left": 5, "top": 5, "right": 108, "bottom": 5},
                 title=alt.TitleParams(
-                    text=share_title,
-                    # Subtitle has to describe whichever emphasis regime is
-                    # actually on screen, or it contradicts the chart.
-                    subtitle=(
-                        f"Share of registrations by powertrain. Highlighting "
-                        f"{', '.join(highlighted)} from the legend above."
-                        if highlighted else
-                        "Share of registrations by powertrain. Petrol and "
-                        "Diesel greyed as baseline; clean fuels highlighted."),
+                    # Structural title: states the comparison the chart is
+                    # engineered to show, and stays true under any filter.
+                    text="Powertrain Market Share Transition Over Time",
+                    # `share_title` is the data-derived finding. It stays as the
+                    # first subtitle line rather than being dropped, so the
+                    # chart still reports what actually happened in the current
+                    # selection instead of asserting a fixed claim.
+                    subtitle=[
+                        share_title,
+                        (f"Share of registrations by powertrain. Highlighting "
+                         f"{', '.join(highlighted)} from the legend above."
+                         if highlighted else
+                         "Share of registrations by powertrain. Petrol and "
+                         "Diesel greyed as baseline; clean fuels highlighted."),
+                    ],
                     anchor="start", align="left", fontSize=16,
                     subtitleColor=GREY_DARK, color=INK),
             )
             .configure_view(strokeWidth=0)   # drop the top and right border
         )
-        st.altair_chart(share_chart, use_container_width=True)
+        st.altair_chart(share_chart, width="stretch")
         st.caption(
             "Same periods, same colours and the same legend selection as the "
             "bars above, read as share of the mix instead of volume. Each "
@@ -1223,7 +1236,7 @@ with tab_macro:
                 text=alt.Text("Registrations:Q", format=","))
 
             st.altair_chart((sub_bars + sub_lbl).properties(height=260),
-                            use_container_width=True)
+                            width="stretch")
             st.caption(f"{len(sub_counts)} sub-types within {cat_drill}.")
 
         else:
@@ -1231,7 +1244,7 @@ with tab_macro:
                             .size().reset_index(name="Registrations")
                             .sort_values("Registrations", ascending=False))
 
-            section("Registrations by vehicle category",
+            section("Volume Contribution Across Major Vehicle Classifications",
                     "Similarity: bars share one hue, so the eye compares "
                     "length, not colour. Click a bar to drill into sub-types.")
 
@@ -1255,7 +1268,7 @@ with tab_macro:
 
             cat_state = st.altair_chart(
                 (cat_bars + cat_lbl).properties(height=260),
-                use_container_width=True, on_select="rerun",
+                width="stretch", on_select="rerun",
                 key=f"cat_drill_select_{st.session_state.get('_cat_nonce', 0)}")
 
             _picked = selection_values(cat_state, "cat_sel", "Category_Plain")
@@ -1269,7 +1282,7 @@ with tab_macro:
                          .size().reset_index(name="Registrations")
                          .sort_values("Registrations", ascending=False))
 
-        section("Registrations by emission norm",
+        section("Fleet Distribution Across Environmental Emission Standards",
                 "Similarity: bars share one hue, so the eye compares length, "
                 "not colour.")
 
@@ -1292,7 +1305,7 @@ with tab_macro:
             text=alt.Text("Registrations:Q", format=","))
 
         st.altair_chart((norm_bars + norm_lbl).properties(height=260),
-                        use_container_width=True)
+                        width="stretch")
 
     st.divider()
 
@@ -1368,7 +1381,10 @@ with tab_macro:
                "“Others”"
                if group_rest and top_n < n_entities else "")
     section(
-        f"Clean-fuel adoption hotspots by {rank_dim.lower()}",
+        # Dimension-aware so the title never claims "by State" while the chart
+        # is actually ranking RTO offices.
+        f"Clean-Fuel Adoption Leaderboard by "
+        f"{'State' if rank_dim == 'State' else 'RTO Office'}",
         f"{_scope}{_pooled}. Preattentive: only the leading row carries the "
         "accent colour.")
 
@@ -1419,7 +1435,7 @@ with tab_macro:
     st.altair_chart(
         (bars + lbl + nat_rule)
         .properties(height=max(260, min(1400, len(ranked) * 28))),
-        use_container_width=True)
+        width="stretch")
     # Caption is colour-matched to the rule itself, so the sentence and the
     # line it describes are bound by similarity rather than by proximity alone.
     # st.caption cannot take a custom colour (Streamlit's :color[] markdown
@@ -1465,7 +1481,8 @@ with tab_oem:
         st.divider()
 
         # --- Chart 1: CFAR vs FMI quadrant scatter -------------------------
-        section("Where each manufacturer sits on both indices",
+        section("Manufacturer Alignment: Clean-Fuel Adoption vs. Fleet "
+                "Modernization",
                 "Bubble size is registration volume. Dashed lines split each "
                 "axis at its mean.")
         cfar_spread = oem["CFAR"].max() - oem["CFAR"].min()
@@ -1588,7 +1605,7 @@ with tab_oem:
             # do return to Python here (same mechanism the Tab 1 volume chart
             # relies on), so the bubble click can slice the stacked bar.
             scatter_state = st.altair_chart(
-                scatter_chart, use_container_width=True,
+                scatter_chart, width="stretch",
                 on_select="rerun", key="oem_scatter_select")
 
             # Full current selection, not just the first bubble. A plain click
@@ -1659,7 +1676,7 @@ with tab_oem:
                .size().reset_index(name="Registrations"))
         fuels_mix = ordered(mix["Fuel_Type"], FUEL_ORDER)
 
-        section("Fuel mix within each manufacturer",
+        section("Powertrain Portfolio Mix by Manufacturer",
                 "Shares within each bar; bars are ordered by total volume.")
 
         # Confirm what the chart is currently scoped to, so a bubble click has
@@ -1698,12 +1715,12 @@ with tab_oem:
             .add_params(mix_fuel_sel)  # FEATURE 2: legend click
             .properties(height=max(280, n_show * 26))
         )
-        st.altair_chart(stacked, use_container_width=True)
+        st.altair_chart(stacked, width="stretch")
 
         st.divider()
 
         # --- Chart 3: Engine_CC distribution -------------------------------
-        section("Engine displacement by sub-type and fuel",
+        section("Engine Displacement Profile Across Vehicle Sub-Types",
                 "Boxes span the interquartile range; whiskers extend to 1.5x IQR.")
         drop_ev = st.checkbox(
             "Exclude electric vehicles (they report 0 cc by definition)",
@@ -1848,7 +1865,7 @@ with tab_oem:
             # two selection signals with the same auto-generated name
             # ("Duplicate signal name"), which blanks the whole chart. Static
             # render keeps the box plot and its hover tooltips working.
-            st.altair_chart(box, use_container_width=True)
+            st.altair_chart(box, width="stretch")
 
 
 # ===========================================================================
@@ -1901,7 +1918,7 @@ with tab_audit:
 
             with col1:
                 section(
-                    "Why vehicles fail the compliance test",
+                    "Primary Drivers of Fleet Non-Compliance",
                     "The two conditions fail independently, so a modern "
                     "zero-emission vehicle can still age out.",
                 )
@@ -1937,7 +1954,7 @@ with tab_audit:
                                        color=GREY_DARK).encode(
                     text=alt.Text("Share:Q", format=".1%"))
                 st.altair_chart((rb + rlbl).properties(height=220),
-                                use_container_width=True)
+                                width="stretch")
 
                 aged_out = int(
                     (risk["Fail_Reason"]
@@ -1950,7 +1967,7 @@ with tab_audit:
 
             with col2:
                 section(
-                    "Ageing non-compliant fleet: age against emission standard",
+                    "Scrappage Risk Density: Vehicle Age vs. Emission Standard",
                     "Warmer, more saturated cells hold more vehicles. Older "
                     "cohorts on the oldest standards carry the greatest "
                     "scrappage exposure.",
@@ -1997,11 +2014,12 @@ with tab_audit:
                                         alt.value("#1E1E1E")),
                 )
                 st.altair_chart((hm + txt).properties(height=320),
-                                use_container_width=True)
+                                width="stretch")
 
             # ===== Lower row: RTO risk, custom Top-N (optional "Other") ======
             section(
-                "Risk fleet by RTO office",
+                "Highest Concentration of Non-Compliant Vehicles by RTO "
+                "Jurisdiction",
                 "Offices ranked by their count of non-compliant vehicles.")
             by_rto = (
                 risk.groupby("RTO_Office")
@@ -2077,7 +2095,7 @@ with tab_audit:
                 .add_params(rto_risk_sel)
                 .properties(height=max(280, len(top_rto) * 30))
             )
-            st.altair_chart(rbar, use_container_width=True)
+            st.altair_chart(rbar, width="stretch")
             st.caption(
                 f"{n_offices} offices have at least one non-compliant vehicle "
                 f"and the count is spread thinly (median {_median_pc} per "
@@ -2101,7 +2119,7 @@ with tab_audit:
             st.dataframe(
                 risk_view[risk_cols].sort_values("Vehicle_Age_Years",
                                                  ascending=False),
-                use_container_width=True, height=340, hide_index=True)
+                width="stretch", height=340, hide_index=True)
             st.download_button(
                 "Download risk fleet as CSV",
                 data=risk_view[risk_cols].to_csv(index=False).encode("utf-8"),
@@ -2155,7 +2173,7 @@ with tab_audit:
                             "Manufacturer_Brand", "Fuel_Type", "Emission_Norm",
                             "Emission_Norm_Clean", "Engine_CC",
                             "Seating_Capacity", "Defect_Reasons"]
-            st.dataframe(view[drill_cols], use_container_width=True, height=380,
+            st.dataframe(view[drill_cols], width="stretch", height=380,
                             hide_index=True)
             st.download_button(
                 "Download flagged records as CSV",
@@ -2187,11 +2205,11 @@ with tab_audit:
             .add_params(check_selection)
             .properties(height=240)
         )
-        st.altair_chart(qbar, use_container_width=True)
+        st.altair_chart(qbar, width="stretch")
 
         st.dataframe(
             quality.assign(**{"Pass rate": (quality["Pass rate"] * 100).round(1)}),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
             column_config={
                 "Pass rate": st.column_config.NumberColumn("Pass rate", format="%.1f%%"),
                 "Failing records": st.column_config.NumberColumn(format="%d")})
@@ -2249,6 +2267,6 @@ with tab_audit:
                 .add_params(err_selection)
                 .properties(height=max(280, len(rto_err) * 26))
             )
-            st.altair_chart(ebar, use_container_width=True)
+            st.altair_chart(ebar, width="stretch")
             st.caption("Offices with fewer than 5 records are excluded, since a "
                        "single bad row would dominate their rate.")
