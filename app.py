@@ -281,12 +281,16 @@ def callout(label, value, note=None, accent=True, color=None):
     the preattentive hierarchy: only the story metrics carry a hue.
     """
     c = color or (ACCENT if accent else GREY_DARK)
+    # Emitted as ONE line with no indentation. A multi-line f-string left the
+    # closing </div> indented; with no `note` the blank line before it made
+    # Markdown read those leading spaces as an indented code block and render
+    # the literal text "</div>" inside the card.
+    note_html = f'<div class="kpi-note">{note}</div>' if note else ""
     st.markdown(
-        f"""<div class="kpi-card" style="--kpi-accent:{c};--kpi-tint:{_tint(c)}">
-              <div class="kpi-label">{label}</div>
-              <div class="kpi-value">{value}</div>
-              {f'<div class="kpi-note">{note}</div>' if note else ''}
-            </div>""",
+        f'<div class="kpi-card" style="--kpi-accent:{c};--kpi-tint:{_tint(c)}">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'{note_html}</div>',
         unsafe_allow_html=True)
 
 
@@ -1624,6 +1628,18 @@ with tab_oem:
                     st.session_state["_oem_click_last"] = _sel_key
                     st.session_state["_oem_mix_pending"] = list(_clicked_oem)
                     st.rerun()
+            elif st.session_state.get("_oem_click_last") is not None:
+                # Selection was cleared (click on blank space / double-click).
+                # Without this branch the last clicked OEM stayed pinned in the
+                # multiselect, so clearing the chart appeared to do nothing.
+                # Restore the default top-10 view and drop the marker, which
+                # also stops this branch firing again on the next rerun.
+                st.session_state["_oem_click_last"] = None
+                st.session_state.pop("selected_oem", None)
+                st.session_state["_oem_mix_pending"] = (
+                    oem.sort_values("Registrations", ascending=False)
+                       ["Brand"].tolist()[:10])
+                st.rerun()
 
             st.caption(
                 "Green pioneers lead on both axes. Compliance leaders run a "
@@ -1680,11 +1696,13 @@ with tab_oem:
                 "Shares within each bar; bars are ordered by total volume.")
 
         # Confirm what the chart is currently scoped to, so a bubble click has
-        # a visible consequence rather than silently changing the chart.
-        if _pending_mix is not None or len(keep) == 1:
+        # a visible consequence rather than silently changing the chart. Keyed
+        # on an ACTIVE scatter selection, so the note disappears again once the
+        # selection is cleared and the default top-10 view is restored.
+        if st.session_state.get("selected_oem"):
             st.caption(
                 f"Filtered from the scatter above to **{', '.join(keep)}**. "
-                "Clear or edit the selector above to compare more.")
+                "Click blank space in the scatter to restore the default view.")
 
         # FEATURE 2: selection on fuel type in stacked bar for cross-highlight
         mix_fuel_sel = alt.selection_point(
